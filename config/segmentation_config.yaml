@@ -1,0 +1,120 @@
+# DeepLabV3+ 分割训练配置文件
+
+# 模型配置
+model:
+  architecture: "deeplabv3_resnet50"  # deeplabv3_resnet50, deeplabv3_resnet101, deeplabv3_mobilenet_v3_large
+  pretrained: true  # 使用预训练权重
+  num_classes: 3  # 背景、指针、刻度
+  
+# 数据配置
+data:
+  root_dir: "data/segmentation"
+  image_dir: "JPEGImages"
+  mask_dir: "SegmentationClass_unified"  # 使用统一后的mask
+  split_dir: "ImageSets"
+  
+  # 数据增强
+  augmentation:
+    resize: [256, 256]  # 输入图像尺寸
+    random_crop: [224, 224]  # 随机裁剪尺寸
+    horizontal_flip: 0.5  # 水平翻转概率
+    vertical_flip: 0.2  # 垂直翻转概率
+    rotation: 15  # 随机旋转角度
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+    gaussian_blur: 0.3  # 高斯模糊概率
+    
+  # 数据加载
+  batch_size: 8  # Apple Silicon优化
+  num_workers: 4  # Apple Silicon优化
+  pin_memory: true
+  shuffle: true
+
+# 训练配置
+training:
+  epochs: 100
+  learning_rate: 0.001
+  weight_decay: 1e-4
+  momentum: 0.9
+  
+  # 学习率调度器
+  scheduler:
+    type: "CosineAnnealingLR"  # StepLR, CosineAnnealingLR, ReduceLROnPlateau
+    T_max: 100  # for CosineAnnealingLR
+    eta_min: 1e-6
+    
+  # 早停
+  early_stopping:
+    patience: 15
+    min_delta: 0.001
+    monitor: "val_loss"  # val_loss, val_miou
+    
+  # 损失函数配置
+  loss:
+    type: "CrossEntropyLoss"  # CrossEntropyLoss, FocalLoss, DiceLoss
+    class_weights: [0.5, 2.0, 2.0]  # 背景、指针、刻度的权重
+    ignore_index: 255  # 忽略的类别索引
+    
+  # 优化器
+  optimizer: "AdamW"  # Adam, AdamW, SGD
+
+# 验证配置
+validation:
+  interval: 1  # 每N个epoch验证一次
+  metrics:
+    - "pixel_accuracy"
+    - "mean_iou"
+    - "class_iou"
+    - "dice_score"
+
+# 设备配置
+device: "mps"  # cuda, mps, cpu
+
+# 保存配置
+save:
+  checkpoint_dir: "outputs/segmentation/checkpoints"
+  log_dir: "outputs/segmentation/logs"
+  best_model_path: "outputs/segmentation/best_model.pth"
+  save_interval: 10  # 每N个epoch保存一次checkpoint
+  save_top_k: 3  # 保存最好的K个模型
+
+# 可视化配置
+visualization:
+  save_predictions: true
+  prediction_dir: "outputs/segmentation/predictions"
+  num_samples: 10  # 可视化样本数量
+  class_colors:
+    0: [0, 0, 0]        # 背景 - 黑色
+    1: [255, 0, 0]      # 指针 - 红色
+    2: [0, 255, 0]      # 刻度 - 绿色
+
+# 推理配置
+inference:
+  model_path: "outputs/segmentation/best_model.pth"
+  output_dir: "outputs/segmentation/inference"
+  confidence_threshold: 0.5
+
+# 导出配置
+export:
+  formats: ["onnx", "torchscript"]  # 导出格式
+  output_dir: "outputs/segmentation/exported"
+  onnx:
+    opset_version: 11
+    dynamic_axes: 
+      input: {0: 'batch_size', 2: 'height', 3: 'width'}
+      output: {0: 'batch_size', 2: 'height', 3: 'width'}
+
+# 日志配置
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  console: true
+  file: true
+  tensorboard: true
+
+# 类别信息
+classes:
+  names: ["background", "pointer", "scale"]
+  colors: [[0, 0, 0], [255, 0, 0], [0, 255, 0]] 

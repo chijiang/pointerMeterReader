@@ -1,0 +1,139 @@
+# Meter Reading Configuration
+# Configuration for different types of meters and their reading parameters
+
+# Default meter configuration
+default:
+  scale_range: [0.0, 1.6]  # [min_value, max_value]
+  units: "MPa"
+  erosion_kernel_size: 5
+  erosion_iterations: 1
+  median_blur_size: 7
+
+# Specific meter type configurations
+meter_types:
+  pressure_gauge:
+    scale_range: [0.0, 1.6]
+    units: "MPa"
+    erosion_kernel_size: 5
+    erosion_iterations: 1
+    median_blur_size: 7
+    description: "Standard pressure gauge 0-1.6 MPa"
+  
+  pressure_gauge_25:
+    scale_range: [0.0, 2.5]
+    units: "MPa"
+    erosion_kernel_size: 5
+    erosion_iterations: 1
+    median_blur_size: 7
+    description: "High pressure gauge 0-2.5 MPa"
+  
+  temperature_gauge:
+    scale_range: [-20, 120]
+    units: "°C"
+    erosion_kernel_size: 3
+    erosion_iterations: 1
+    median_blur_size: 5
+    description: "Temperature gauge -20 to 120°C"
+  
+  flow_meter:
+    scale_range: [0, 100]
+    units: "L/min"
+    erosion_kernel_size: 5
+    erosion_iterations: 1
+    median_blur_size: 7
+    description: "Flow meter 0-100 L/min"
+
+# Processing parameters
+processing:
+  # Image preprocessing
+  resize_target: 224
+  
+  # Segmentation classes
+  classes:
+    background: 0
+    pointer: 1
+    scale: 2
+  
+  # Morphological operations
+  erosion:
+    kernel_size: 5
+    iterations: 1
+    kernel_type: "rect"  # rect, ellipse, cross
+  
+  # Noise reduction
+  median_blur:
+    kernel_size: 7
+  
+  # Contour detection
+  contour_mode: "external"  # external, list, ccomp, tree
+  contour_method: "simple"  # none, simple, tc89_l1, tc89_kcos
+  
+  # Minimum areas (to filter noise)
+  min_pointer_area: 50
+  min_scale_area: 100
+
+# Visualization settings
+visualization:
+  colors:
+    scale_points: [0, 0, 255]      # Red (BGR)
+    center_point: [0, 255, 0]      # Green (BGR)
+    pointer_line: [255, 0, 0]      # Blue (BGR)
+    text_color: [255, 255, 255]    # White (BGR)
+  
+  marker_sizes:
+    scale_point_radius: 3
+    center_point_radius: 5
+    pointer_line_thickness: 3
+  
+  text:
+    font: "HERSHEY_SIMPLEX"
+    font_scale: 1.0
+    thickness: 2
+    position: [10, 30]
+
+# Output settings
+output:
+  precision: 3  # Number of decimal places
+  save_format: "json"  # json, csv, txt
+  include_metadata: true
+  
+  # Result fields to include
+  fields:
+    - filename
+    - reading
+    - units
+    - confidence
+    - processing_time
+    - meter_type
+
+# Quality control
+quality_control:
+  # Validation ranges (readings outside these ranges will be flagged)
+  reasonable_ranges:
+    pressure_gauge: [0.0, 1.8]      # Allow 10% over max
+    pressure_gauge_25: [0.0, 2.75]  # Allow 10% over max
+    temperature_gauge: [-25, 130]   # Allow some margin
+    flow_meter: [0, 110]            # Allow 10% over max
+  
+  # Confidence thresholds
+  min_confidence: 0.5
+  
+  # Geometric validation
+  min_pointer_length: 10  # pixels
+  max_center_offset: 50   # pixels from image center
+  
+  # Scale validation
+  min_scale_points: 2
+  max_scale_gap: 180      # degrees
+
+# Debug settings
+debug:
+  show_intermediate_steps: false
+  save_debug_images: false
+  verbose_logging: false
+  
+  # Debug image settings
+  debug_output_dir: "debug_output"
+  save_masks: true
+  save_contours: true
+  save_geometry: true 
