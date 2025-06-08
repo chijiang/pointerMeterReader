@@ -16,18 +16,11 @@ import gradio as gr
 import cv2
 import numpy as np
 import torch
-import torch.nn.functional as F
 from ultralytics import YOLO
-import matplotlib.pyplot as plt
 from pathlib import Path
-import tempfile
 import os
 import sys
 from typing import Tuple, Optional, List, Dict, Any
-import json
-from PIL import Image
-import io
-import base64
 
 # Add scripts directory to path
 sys.path.append(str(Path(__file__).parent / "scripts"))
