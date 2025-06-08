@@ -122,6 +122,9 @@ cd pointMeterDetection
 
 # 使用uv创建环境并安装依赖
 uv sync
+
+# 如果使用Git LFS下载大文件
+git lfs pull
 ```
 
 #### 使用pip
@@ -137,7 +140,41 @@ source .venv/bin/activate  # Linux/Mac
 
 # 安装依赖
 pip install -r requirements.txt
+
+# 如果使用Git LFS下载大文件
+git lfs pull
 ```
+
+### 1.5. 下载预训练模型和数据集（可选）
+
+#### 选项1：从Hugging Face下载（推荐）
+```bash
+# 安装huggingface_hub
+pip install huggingface_hub
+
+# 下载预训练模型
+python -c "
+from huggingface_hub import snapshot_download
+snapshot_download(repo_id='chijiang/pointer-meter-reader', local_dir='models/')
+"
+
+# 下载训练数据集
+python -c "
+from huggingface_hub import snapshot_download
+snapshot_download(repo_id='chijiang/pointer-meter-detection-dataset', repo_type='dataset', local_dir='data/')
+"
+```
+
+#### 选项2：从GitHub LFS下载
+```bash
+# 确保已安装git-lfs
+git lfs install
+git lfs pull
+```
+
+#### 选项3：手动下载
+- 🤗 模型: [chijiang/pointer-meter-reader](https://huggingface.co/chijiang/pointer-meter-reader)
+- 🤗 数据集: [chijiang/pointer-meter-detection-dataset](https://huggingface.co/datasets/chijiang/pointer-meter-detection-dataset)
 
 ### 2. 启动Web应用
 
