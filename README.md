@@ -117,7 +117,7 @@ PyYAML>=6.0
 #### 使用uv（推荐）
 ```bash
 # 克隆项目
-git clone <repository-url>
+git clone https://github.com/chijiang/pointerMeterReader.git
 cd pointMeterDetection
 
 # 使用uv创建环境并安装依赖
@@ -127,7 +127,7 @@ uv sync
 #### 使用pip
 ```bash
 # 克隆项目
-git clone <repository-url>
+git clone https://github.com/chijiang/pointerMeterReader.git
 cd pointMeterDetection
 
 # 创建虚拟环境
