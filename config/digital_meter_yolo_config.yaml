@@ -1,0 +1,131 @@
+# 液晶数字表检测 YOLOv10 模型配置文件
+# 专门针对液晶表检测任务优化的参数配置
+
+# 数据集配置
+dataset:
+  path: 'data/digital_meters'  # 数据集根目录
+  train: 'images'              # 训练图像目录
+  val: 'images'                # 验证图像目录（如果没有单独的验证集，会自动分割）
+  nc: 1                        # 类别数量（只有digital_meter一个类别）
+  names: ['digital_meter']     # 类别名称
+
+# 模型配置
+model: 'yolov10n.pt'  # YOLOv10 nano模型，轻量级适合实时应用
+
+# 训练基本参数
+epochs: 200              # 训练轮数，液晶表特征相对简单，适当增加轮数
+batch_size: 16           # 批大小（根据GPU内存调整）
+image_size: 640          # 输入图像大小
+learning_rate: 0.01      # 初始学习率
+weight_decay: 0.0005     # 权重衰减
+momentum: 0.937          # SGD动量
+patience: 50             # 早停耐心值
+save_period: 20          # 模型保存间隔
+experiment_name: 'digital_meter_detection'  # 实验名称
+
+# 设备和性能配置
+device: 'mps'            # Apple芯片使用MPS加速
+workers: 4               # 数据加载器工作进程数
+seed: 42                 # 随机种子
+cos_lr: true             # 使用余弦学习率调度，有助于更好收敛
+close_mosaic: 20         # 关闭mosaic增强的epoch数
+amp: true                # 自动混合精度训练，提高训练效率
+
+# 针对液晶表特点的数据增强配置
+augmentation:
+  # 颜色空间增强 - 液晶表容易受光照影响
+  hsv_h: 0.01            # 色调增强范围（较小，液晶表颜色相对固定）
+  hsv_s: 0.6             # 饱和度增强范围
+  hsv_v: 0.5             # 亮度增强范围（重要，应对不同光照条件）
+  
+  # 几何变换增强 - 考虑拍摄角度变化
+  degrees: 10.0          # 旋转角度范围（液晶表可能有角度倾斜）
+  translate: 0.15        # 平移范围
+  scale: 0.6             # 缩放范围（液晶表大小变化较大）
+  shear: 3.0             # 剪切角度范围
+  perspective: 0.0002    # 透视变换概率（轻微透视变换）
+  
+  # 翻转增强
+  flipud: 0.0            # 上下翻转概率（液晶表有方向性，不建议上下翻转）
+  fliplr: 0.3            # 左右翻转概率（适度使用）
+  
+  # 混合增强
+  mosaic: 0.8            # Mosaic增强概率（有助于检测多个表计）
+  mixup: 0.05            # MixUp增强概率（较低，保持液晶表特征清晰）
+  copy_paste: 0.05       # Copy-Paste增强概率
+
+# 验证和评估配置
+validation:
+  conf_threshold: 0.25   # 置信度阈值
+  iou_threshold: 0.5     # NMS IoU阈值（液晶表重叠少，可以稍高）
+  max_det: 100           # 最大检测数量（单张图中液晶表数量有限）
+  split: 0.2             # 验证集分割比例
+
+# 针对液晶表的损失函数权重调整
+loss_weights:
+  box: 8.0               # 边界框损失权重（稍微提高，精确定位很重要）
+  cls: 0.3               # 分类损失权重（只有一个类别，权重可以降低）
+  dfl: 1.5               # 分布损失权重
+
+# 优化器配置
+optimizer:
+  type: 'AdamW'          # AdamW优化器，适合液晶表检测
+  lr0: 0.01              # 初始学习率
+  lrf: 0.01              # 最终学习率
+  weight_decay: 0.0005   # 权重衰减
+
+# 学习率调度器
+lr_scheduler:
+  type: 'cosine'         # 余弦学习率调度
+  warmup_epochs: 5       # 预热轮数
+  warmup_momentum: 0.8   # 预热动量
+  warmup_bias_lr: 0.1    # 预热偏置学习率
+
+# 模型导出配置
+export:
+  formats: ['onnx', 'torchscript']  # 导出格式
+  optimize: true         # 优化导出模型
+  half: false            # 是否使用FP16
+  int8: false            # 是否使用INT8量化
+  dynamic: true          # 支持动态输入尺寸（便于不同分辨率图像）
+  simplify: true         # 简化ONNX模型
+
+# 日志和可视化配置
+logging:
+  log_level: 'INFO'
+  save_plots: true       # 保存训练图表
+  save_predictions: true # 保存预测结果
+  wandb: false           # 如需要可以启用wandb日志
+
+# 液晶数字表检测特定配置
+digital_meter_detection:
+  min_meter_size: 40     # 最小液晶表尺寸（像素）
+  max_meter_size: 600    # 最大液晶表尺寸（像素）
+  aspect_ratio_range: [1.5, 5.0]  # 液晶表通常是横向矩形
+  confidence_threshold: 0.3  # 推理时的置信度阈值
+  
+# 回调函数配置
+callbacks:
+  early_stopping:
+    enabled: true
+    patience: 40         # 液晶表特征相对简单，增加耐心值
+    min_delta: 0.001
+  
+  model_checkpoint:
+    save_best_only: true
+    save_weights_only: false
+    monitor: 'val_loss'
+    
+  reduce_lr_on_plateau:
+    enabled: true
+    factor: 0.3
+    patience: 15
+    min_lr: 1e-6
+
+# 推理后处理配置
+post_processing:
+  nms_iou_threshold: 0.5
+  confidence_threshold: 0.25
+  max_detections: 50
+  filter_small_objects: true  # 过滤过小的检测框
+  min_object_area: 1600      # 最小目标面积（40x40像素） 
