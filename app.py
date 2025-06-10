@@ -292,6 +292,438 @@ class MeterSegmentor:
             return mask
 
 
+class DigitDetector:
+    """YOLO-based digit detection for LCD displays"""
+    
+    def __init__(self, model_path: str):
+        """Initialize digit detector with trained model"""
+        if os.path.exists(model_path):
+            self.model = YOLO(model_path)
+            print(f"✅ Loaded digit detection model: {model_path}")
+        else:
+            print(f"⚠️ Digit model not found at {model_path}, using base YOLO")
+            self.model = YOLO("yolov10n.pt")
+        
+        # Define class names for digits
+        self.class_names = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'point']
+        
+    def detect_digits(self, image: np.ndarray, conf_threshold: float = 0.3) -> List[Dict]:
+        """
+        Detect digits in LCD display image
+        
+        Args:
+            image: Input image (BGR format)
+            conf_threshold: Confidence threshold for detection
+            
+        Returns:
+            List of detection results with digit information
+        """
+        results = self.model(image, conf=conf_threshold)
+        
+        detections = []
+        for r in results:
+            boxes = r.boxes
+            if boxes is not None:
+                for i in range(len(boxes)):
+                    x1, y1, x2, y2 = boxes.xyxy[i].cpu().numpy()
+                    conf = boxes.conf[i].cpu().numpy()
+                    cls = int(boxes.cls[i].cpu().numpy())
+                    
+                    # Get class name
+                    if hasattr(r, 'names') and cls in r.names:
+                        class_name = r.names[cls]
+                    elif cls < len(self.class_names):
+                        class_name = self.class_names[cls]
+                    else:
+                        class_name = str(cls)
+                    
+                    detections.append({
+                        'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                        'confidence': float(conf),
+                        'class_id': cls,
+                        'class': class_name,
+                        'center_x': (x1 + x2) / 2,
+                        'center_y': (y1 + y2) / 2
+                    })
+        
+        return detections
+    
+    def filter_duplicate_detections(self, detections: List[Dict], 
+                                  overlap_threshold: float = 0.7,
+                                  distance_threshold: float = 30) -> List[Dict]:
+        """
+        Filter out duplicate detections that are too close to each other
+        
+        Args:
+            detections: List of detection results
+            overlap_threshold: IoU threshold for considering detections as duplicates
+            distance_threshold: Distance threshold in pixels
+            
+        Returns:
+            Filtered detections list
+        """
+        if len(detections) <= 1:
+            return detections
+        
+        # Sort by confidence (highest first)
+        detections = sorted(detections, key=lambda x: x['confidence'], reverse=True)
+        
+        filtered = []
+        
+        for det in detections:
+            is_duplicate = False
+            
+            for existing in filtered:
+                # 对于相同的数字类别，检查是否过于接近
+                if det['class'] == existing['class']:
+                    # 小数点单独处理，允许多个小数点候选，后续会合并
+                    if det['class'] == 'point':
+                        # 小数点的距离阈值更严格
+                        dx = det['center_x'] - existing['center_x']
+                        dy = det['center_y'] - existing['center_y']
+                        distance = np.sqrt(dx*dx + dy*dy)
+                        
+                        # 小数点距离很近才认为是重复
+                        if distance < distance_threshold * 0.5:  # 更严格的距离要求
+                            is_duplicate = True
+                            break
+                    else:
+                        # 对于数字，检查距离和重叠
+                        dx = det['center_x'] - existing['center_x']
+                        dy = det['center_y'] - existing['center_y']
+                        distance = np.sqrt(dx*dx + dy*dy)
+                        
+                        # Calculate IoU
+                        iou = self._calculate_iou(det['bbox'], existing['bbox'])
+                        
+                        # 如果距离很近或重叠很大，认为是重复
+                        if distance < distance_threshold or iou > overlap_threshold:
+                            is_duplicate = True
+                            break
+                
+                # 额外检查：如果是不同数字但位置几乎重叠，可能是误识别
+                elif det['class'] != 'point' and existing['class'] != 'point':
+                    iou = self._calculate_iou(det['bbox'], existing['bbox'])
+                    # 如果两个不同数字的重叠度很高，保留置信度更高的
+                    if iou > 0.8:  # 高重叠阈值
+                        is_duplicate = True
+                        break
+            
+            if not is_duplicate:
+                filtered.append(det)
+        
+        return filtered
+    
+    def _calculate_iou(self, box1: List[int], box2: List[int]) -> float:
+        """Calculate Intersection over Union (IoU) of two bounding boxes"""
+        x1_1, y1_1, x2_1, y2_1 = box1
+        x1_2, y1_2, x2_2, y2_2 = box2
+        
+        # Calculate intersection
+        x1_i = max(x1_1, x1_2)
+        y1_i = max(y1_1, y1_2)
+        x2_i = min(x2_1, x2_2)
+        y2_i = min(y2_1, y2_2)
+        
+        if x2_i <= x1_i or y2_i <= y1_i:
+            return 0.0
+        
+        intersection = (x2_i - x1_i) * (y2_i - y1_i)
+        
+        # Calculate union
+        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union = area1 + area2 - intersection
+        
+        return intersection / union if union > 0 else 0.0
+    
+    def extract_reading(self, detections: List[Dict]) -> str:
+        """
+        Extract the complete reading from detected digits with intelligent grouping
+        
+        Args:
+            detections: List of filtered detections
+            
+        Returns:
+            String representation of the reading
+        """
+        if not detections:
+            return ""
+        
+        # 按x坐标排序（从左到右）
+        sorted_detections = sorted(detections, key=lambda x: x['center_x'])
+        
+        # 进一步处理数字序列，处理重复和分组
+        final_reading = self._process_digit_sequence(sorted_detections)
+        
+        return final_reading
+    
+    def _process_digit_sequence(self, sorted_detections: List[Dict]) -> str:
+        """
+        处理数字序列，智能分组并构建最终读数
+        
+        Args:
+            sorted_detections: 按x坐标排序的检测结果
+            
+        Returns:
+            处理后的读数字符串
+        """
+        if not sorted_detections:
+            return ""
+        
+        # 分析数字的位置分布，确定数字组
+        digit_groups = self._group_digits_by_position(sorted_detections)
+        
+        # 为每个组构建读数
+        readings = []
+        for group in digit_groups:
+            group_reading = self._construct_group_reading(group)
+            if group_reading:
+                readings.append(group_reading)
+        
+        # 合并所有读数（用空格分隔多个独立的数字）
+        if len(readings) == 1:
+            return readings[0]
+        else:
+            return " ".join(readings)
+    
+    def _group_digits_by_position(self, detections: List[Dict]) -> List[List[Dict]]:
+        """
+        根据位置将数字分组，识别不同的数字显示区域
+        
+        Args:
+            detections: 排序后的检测结果
+            
+        Returns:
+            数字组列表
+        """
+        if not detections:
+            return []
+        
+        groups = []
+        current_group = [detections[0]]
+        
+        # 计算平均字符宽度和间距作为分组依据
+        widths = [det['bbox'][2] - det['bbox'][0] for det in detections]
+        avg_width = np.mean(widths) if widths else 50
+        
+        for i in range(1, len(detections)):
+            prev_det = detections[i-1]
+            curr_det = detections[i]
+            
+            # 计算两个检测框之间的间距
+            prev_right = prev_det['bbox'][2]
+            curr_left = curr_det['bbox'][0]
+            gap = curr_left - prev_right
+            
+            # 如果间距大于平均宽度的1.5倍，认为是新的数字组
+            # 或者如果是小数点，间距更小也可能是新组
+            gap_threshold = avg_width * 1.5
+            if prev_det['class'] == 'point' or curr_det['class'] == 'point':
+                gap_threshold = avg_width * 0.8  # 小数点附近的阈值更小
+            
+            if gap > gap_threshold:
+                groups.append(current_group)
+                current_group = [curr_det]
+            else:
+                current_group.append(curr_det)
+        
+        groups.append(current_group)
+        return groups
+    
+    def _construct_group_reading(self, group: List[Dict]) -> str:
+        """
+        为单个数字组构建读数，处理重复数字
+        
+        Args:
+            group: 单个组的检测结果
+            
+        Returns:
+            该组的读数字符串
+        """
+        if not group:
+            return ""
+        
+        # 再次按x坐标精确排序
+        group = sorted(group, key=lambda x: x['center_x'])
+        
+        # 处理位置相近的重复数字
+        filtered_group = self._remove_positional_duplicates(group)
+        
+        # 构建读数字符串
+        reading_parts = []
+        for det in filtered_group:
+            if det['class'] == 'point':
+                reading_parts.append(".")
+            else:
+                reading_parts.append(str(det['class']))
+        
+        reading = "".join(reading_parts)
+        
+        # 清理读数
+        reading = self._validate_reading(reading)
+        
+        return reading
+    
+    def _remove_positional_duplicates(self, group: List[Dict]) -> List[Dict]:
+        """
+        移除位置相近的重复数字，保留置信度最高的
+        
+        Args:
+            group: 数字组
+            
+        Returns:
+            去重后的数字组
+        """
+        if len(group) <= 1:
+            return group
+        
+        # 按置信度降序排序
+        group = sorted(group, key=lambda x: x['confidence'], reverse=True)
+        
+        filtered = []
+        for det in group:
+            is_duplicate = False
+            
+            for existing in filtered:
+                # 检查是否为位置相近的相同类别
+                if det['class'] == existing['class']:
+                    # 计算中心距离
+                    dx = det['center_x'] - existing['center_x']
+                    dy = det['center_y'] - existing['center_y']
+                    distance = np.sqrt(dx*dx + dy*dy)
+                    
+                    # 计算平均框大小作为距离阈值
+                    avg_size = np.mean([
+                        det['bbox'][2] - det['bbox'][0],
+                        det['bbox'][3] - det['bbox'][1],
+                        existing['bbox'][2] - existing['bbox'][0],
+                        existing['bbox'][3] - existing['bbox'][1]
+                    ])
+                    
+                    # 如果距离小于平均尺寸的0.5倍，认为是重复
+                    if distance < avg_size * 0.5:
+                        is_duplicate = True
+                        break
+            
+            if not is_duplicate:
+                filtered.append(det)
+        
+        # 重新按x坐标排序
+        return sorted(filtered, key=lambda x: x['center_x'])
+    
+    def _validate_reading(self, reading: str) -> str:
+        """
+        验证并清理读数字符串
+        
+        Args:
+            reading: 原始读数字符串
+            
+        Returns:
+            清理后的读数字符串
+        """
+        if not reading:
+            return "0"
+        
+        # 移除连续的小数点
+        while '..' in reading:
+            reading = reading.replace('..', '.')
+        
+        # 移除开头和结尾的小数点
+        reading = reading.strip('.')
+        
+        # 如果为空，返回"0"
+        if not reading:
+            return "0"
+        
+        # 处理多个小数点的情况，只保留第一个
+        if reading.count('.') > 1:
+            parts = reading.split('.')
+            if parts[0]:  # 如果第一部分不为空
+                reading = parts[0] + '.' + ''.join(parts[1:])
+            else:  # 如果第一部分为空，取第二部分作为整数
+                reading = ''.join(parts[1:])
+                if '.' in reading:  # 如果还有小数点
+                    sub_parts = reading.split('.')
+                    reading = sub_parts[0] + '.' + ''.join(sub_parts[1:])
+        
+        # 确保不以小数点开头
+        if reading.startswith('.'):
+            reading = '0' + reading
+        
+        # 移除末尾的小数点
+        if reading.endswith('.'):
+            reading = reading[:-1]
+        
+        # 验证是否为有效数字格式
+        try:
+            float(reading)
+        except ValueError:
+            # 如果不是有效数字，尝试提取纯数字
+            digits_only = ''.join([c for c in reading if c.isdigit() or c == '.'])
+            if digits_only and digits_only != '.':
+                reading = digits_only
+                # 再次清理
+                if reading.count('.') > 1:
+                    parts = reading.split('.')
+                    reading = parts[0] + '.' + ''.join(parts[1:])
+            else:
+                reading = "0"
+        
+        return reading
+    
+    def visualize_detections(self, image: np.ndarray, detections: List[Dict]) -> np.ndarray:
+        """
+        Visualize digit detections on image
+        
+        Args:
+            image: Input image
+            detections: List of detections
+            
+        Returns:
+            Image with visualization
+        """
+        vis_img = image.copy()
+        
+        # Define colors for different classes
+        colors = {
+            'point': (0, 0, 255),  # Red for decimal point
+            'digit': (0, 255, 0)   # Green for digits
+        }
+        
+        for det in detections:
+            bbox = det['bbox']
+            conf = det['confidence']
+            class_name = det['class']
+            
+            # Choose color
+            color = colors['point'] if class_name == 'point' else colors['digit']
+            
+            # Draw bounding box
+            cv2.rectangle(vis_img, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
+            
+            # Draw label
+            label = f"{class_name}: {conf:.2f}"
+            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+            
+            # Background for label
+            cv2.rectangle(vis_img, 
+                         (bbox[0], bbox[1] - label_size[1] - 10), 
+                         (bbox[0] + label_size[0], bbox[1]), 
+                         color, -1)
+            
+            # Label text
+            cv2.putText(vis_img, label, 
+                       (bbox[0], bbox[1] - 5), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+            
+            # Draw center point
+            center = (int(det['center_x']), int(det['center_y']))
+            cv2.circle(vis_img, center, 3, color, -1)
+        
+        return vis_img
+
+
 class MeterReadingApp:
     """Complete meter reading application"""
     
@@ -315,11 +747,11 @@ class MeterReadingApp:
         
         self.segmentor = MeterSegmentor(self.segmentation_model_path, self.device)
         self.reader = MeterReader(scale_range=(0.0, 1.6), debug=False)
-        
+    
     def process_image(self, image: np.ndarray, conf_threshold: float = 0.5, 
                      scale_min: float = 0.0, scale_max: float = 1.6) -> Dict[str, Any]:
         """
-        Complete processing pipeline
+        Complete processing pipeline for meter reading
         
         Args:
             image: Input image
@@ -482,14 +914,76 @@ class MeterReadingApp:
         return vis_img
 
 
-def create_gradio_interface():
-    """Create Gradio interface"""
+class DigitReadingApp:
+    """LCD digit reading application"""
     
-    # Initialize app
-    app = MeterReadingApp()
+    def __init__(self):
+        """Initialize the digit reading application"""
+        # Model path for digit detection
+        self.digit_model_path = "models/detection/digits_model.pt"
+        
+        # Initialize digit detector
+        self.digit_detector = DigitDetector(self.digit_model_path)
+        print(f"Digit reading app initialized with model: {self.digit_model_path}")
+    
+    def process_digit_image(self, image: np.ndarray, conf_threshold: float = 0.3,
+                          overlap_threshold: float = 0.7, 
+                          distance_threshold: float = 30) -> Dict[str, Any]:
+        """
+        Process LCD digit image and extract reading
+        
+        Args:
+            image: Input image (BGR format)
+            conf_threshold: Detection confidence threshold
+            overlap_threshold: IoU threshold for duplicate filtering
+            distance_threshold: Distance threshold for duplicate filtering
+            
+        Returns:
+            Dictionary with processing results
+        """
+        results = {
+            'success': False,
+            'reading': '',
+            'raw_detections': [],
+            'filtered_detections': [],
+            'error': None
+        }
+        
+        try:
+            # Step 1: Detect all digits
+            raw_detections = self.digit_detector.detect_digits(image, conf_threshold)
+            results['raw_detections'] = raw_detections
+            
+            if not raw_detections:
+                results['error'] = "No digits detected in the image"
+                return results
+            
+            # Step 2: Filter duplicate detections
+            filtered_detections = self.digit_detector.filter_duplicate_detections(
+                raw_detections, overlap_threshold, distance_threshold)
+            results['filtered_detections'] = filtered_detections
+            
+            # Step 3: Extract reading
+            reading = self.digit_detector.extract_reading(filtered_detections)
+            results['reading'] = reading
+            
+            results['success'] = True
+            
+        except Exception as e:
+            results['error'] = f"Processing error: {str(e)}"
+        
+        return results
+
+
+def create_gradio_interface():
+    """Create Gradio interface with tabs for different functionalities"""
+    
+    # Initialize apps
+    meter_app = MeterReadingApp()
+    digit_app = DigitReadingApp()
     
     def process_uploaded_image(image, conf_threshold, scale_min, scale_max):
-        """Process uploaded image and return results"""
+        """Process uploaded image and return results for meter reading"""
         if image is None:
             return None, None, None, None, "Please upload an image"
         
@@ -497,7 +991,7 @@ def create_gradio_interface():
         image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
         
         # Process image
-        results = app.process_image(image_cv, conf_threshold, scale_min, scale_max)
+        results = meter_app.process_image(image_cv, conf_threshold, scale_min, scale_max)
         
         if not results['success']:
             error_msg = results.get('error', 'Unknown error occurred')
@@ -523,68 +1017,229 @@ def create_gradio_interface():
         
         return None, None, None, None, summary_text
     
-    # Create interface
+    def process_digit_image(image, conf_threshold, overlap_threshold, distance_threshold):
+        """Process LCD digit image and return results"""
+        if image is None:
+            return None, None, "Please upload an image"
+        
+        # Convert PIL to OpenCV format
+        image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        
+        # Process image
+        results = digit_app.process_digit_image(image_cv, conf_threshold, 
+                                              overlap_threshold, distance_threshold)
+        
+        if not results['success']:
+            error_msg = results.get('error', 'Unknown error occurred')
+            return None, None, error_msg
+        
+        # Prepare visualizations
+        raw_vis = digit_app.digit_detector.visualize_detections(
+            image_cv, results['raw_detections'])
+        filtered_vis = digit_app.digit_detector.visualize_detections(
+            image_cv, results['filtered_detections'])
+        
+        # Convert BGR to RGB for display
+        raw_vis_rgb = cv2.cvtColor(raw_vis, cv2.COLOR_BGR2RGB)
+        filtered_vis_rgb = cv2.cvtColor(filtered_vis, cv2.COLOR_BGR2RGB)
+        
+        # 创建详细的处理信息
+        raw_count = len(results['raw_detections'])
+        filtered_count = len(results['filtered_detections'])
+        removed_count = raw_count - filtered_count
+        
+        # 分析检测到的数字类别
+        detected_classes = {}
+        for det in results['filtered_detections']:
+            class_name = det['class']
+            if class_name not in detected_classes:
+                detected_classes[class_name] = 0
+            detected_classes[class_name] += 1
+        
+        class_info = ", ".join([f"{k}: {v}" for k, v in detected_classes.items()])
+        
+        # 构建详细信息
+        summary_text = f"📱 LCD读数识别结果\n"
+        summary_text += f"{'='*40}\n\n"
+        
+        summary_text += f"✅ 最终读数: **{results['reading']}**\n\n"
+        
+        summary_text += f"📊 检测统计:\n"
+        summary_text += f"  🔍 原始检测: {raw_count} 个数字\n"
+        summary_text += f"  🎯 过滤后: {filtered_count} 个数字\n"
+        summary_text += f"  🗑️ 移除重复: {removed_count} 个\n\n"
+        
+        if class_info:
+            summary_text += f"📋 检测类别统计:\n"
+            summary_text += f"  {class_info}\n\n"
+        
+        summary_text += f"⚙️ 处理参数:\n"
+        summary_text += f"  置信度阈值: {conf_threshold}\n"
+        summary_text += f"  重叠阈值: {overlap_threshold}\n"
+        summary_text += f"  距离阈值: {distance_threshold} 像素\n\n"
+        
+        if results['filtered_detections']:
+            summary_text += "🔍 最终检测详情 (从左到右):\n"
+            sorted_dets = sorted(results['filtered_detections'], key=lambda x: x['center_x'])
+            for i, det in enumerate(sorted_dets):
+                pos_x = int(det['center_x'])
+                pos_y = int(det['center_y'])
+                summary_text += f"  {i+1}. '{det['class']}' (置信度: {det['confidence']:.3f}, 位置: {pos_x},{pos_y})\n"
+        
+        # 如果有被移除的检测，显示一些信息
+        if removed_count > 0:
+            summary_text += f"\n⚠️ 移除的重复检测:\n"
+            removed_dets = [det for det in results['raw_detections'] 
+                          if det not in results['filtered_detections']]
+            for i, det in enumerate(removed_dets[:5]):  # 最多显示5个
+                summary_text += f"  - '{det['class']}' (置信度: {det['confidence']:.3f})\n"
+            if len(removed_dets) > 5:
+                summary_text += f"  ... 以及其他 {len(removed_dets)-5} 个重复检测\n"
+        
+        return raw_vis_rgb, filtered_vis_rgb, summary_text
+    
+    # Create interface with tabs
     with gr.Blocks(title="Meter Reading Extraction", theme=gr.themes.Soft()) as interface:
         gr.Markdown("""
-        # 🔧 Industrial Meter Reading Extraction
+        # 🔧 Industrial Meter & LCD Display Reading System
         
-        Upload an image containing industrial meters to automatically extract readings using AI.
-        
-        **Pipeline:** Detection → Cropping → Segmentation → Reading Extraction
+        AI-powered system for extracting readings from industrial meters and LCD displays.
         """)
         
-        with gr.Row():
-            with gr.Column(scale=1):
-                # Input section
-                gr.Markdown("## 📤 Input")
-                image_input = gr.Image(type="pil", label="Upload Meter Image")
+        with gr.Tabs():
+            # Tab 1: Traditional Meter Reading
+            with gr.TabItem("🔧 Industrial Meters"):
+                gr.Markdown("""
+                ## Industrial Meter Reading Extraction
+                
+                Upload an image containing industrial meters to automatically extract readings using AI.
+                
+                **Pipeline:** Detection → Cropping → Segmentation → Reading Extraction
+                """)
                 
                 with gr.Row():
-                    conf_threshold = gr.Slider(0.1, 0.9, value=0.5, step=0.1, 
-                                             label="Detection Confidence")
+                    with gr.Column(scale=1):
+                        # Input section
+                        gr.Markdown("### 📤 Input")
+                        meter_image_input = gr.Image(type="pil", label="Upload Meter Image")
+                        
+                        with gr.Row():
+                            meter_conf_threshold = gr.Slider(0.1, 0.9, value=0.5, step=0.1, 
+                                                           label="Detection Confidence")
+                            
+                        with gr.Row():
+                            scale_min = gr.Number(value=0.0, label="Scale Min Value")
+                            scale_max = gr.Number(value=1.6, label="Scale Max Value")
+                        
+                        meter_process_btn = gr.Button("🚀 Extract Readings", variant="primary", size="lg")
+                        
+                        # Results summary
+                        gr.Markdown("### 📊 Results")
+                        meter_results_text = gr.Textbox(label="Summary", lines=5, interactive=False)
                     
-                with gr.Row():
-                    scale_min = gr.Number(value=0.0, label="Scale Min Value")
-                    scale_max = gr.Number(value=1.6, label="Scale Max Value")
+                    with gr.Column(scale=2):
+                        # Visualization section
+                        gr.Markdown("### 👁️ Process Visualization")
+                        
+                        with gr.Row():
+                            meter_detection_output = gr.Image(label="1. Detection Results")
+                            meter_crop_output = gr.Image(label="2. Cropped Meter")
+                        
+                        with gr.Row():
+                            meter_segmentation_output = gr.Image(label="3. Segmentation Masks")
+                            meter_result_output = gr.Image(label="4. Final Reading")
                 
-                process_btn = gr.Button("🚀 Extract Readings", variant="primary", size="lg")
+                # Event handlers for meter tab
+                meter_process_btn.click(
+                    fn=process_uploaded_image,
+                    inputs=[meter_image_input, meter_conf_threshold, scale_min, scale_max],
+                    outputs=[meter_detection_output, meter_crop_output, 
+                           meter_segmentation_output, meter_result_output, meter_results_text]
+                )
                 
-                # Results summary
-                gr.Markdown("## 📊 Results")
-                results_text = gr.Textbox(label="Summary", lines=5, interactive=False)
+                # Examples for meter
+                gr.Markdown("### 📋 Usage Instructions")
+                gr.Markdown("""
+                1. **Upload Image**: Choose an image containing industrial meters
+                2. **Adjust Settings**: 
+                   - Detection Confidence: Higher values = more strict detection
+                   - Scale Range: Set the min/max values of your meter scale
+                3. **Process**: Click "Extract Readings" to run the complete pipeline
+                4. **View Results**: Check the visualization and summary
+                
+                **Supported Formats**: JPG, PNG, BMP
+                **Best Results**: Clear, well-lit images with visible meter faces
+                """)
             
-            with gr.Column(scale=2):
-                # Visualization section
-                gr.Markdown("## 👁️ Process Visualization")
+            # Tab 2: LCD Digit Reading
+            with gr.TabItem("📱 LCD Display Reading"):
+                gr.Markdown("""
+                ## LCD Digital Display Reading
+                
+                Upload an image containing LCD digital displays to automatically extract numeric readings.
+                
+                **Features:** 
+                - Detects digits 0-9 and decimal points
+                - Filters duplicate detections
+                - Reads from left to right (high to low digit)
+                """)
                 
                 with gr.Row():
-                    detection_output = gr.Image(label="1. Detection Results")
-                    crop_output = gr.Image(label="2. Cropped Meter")
+                    with gr.Column(scale=1):
+                        # Input section
+                        gr.Markdown("### 📤 Input")
+                        digit_image_input = gr.Image(type="pil", label="Upload LCD Display Image")
+                        
+                        gr.Markdown("### ⚙️ Detection Settings")
+                        digit_conf_threshold = gr.Slider(0.1, 0.9, value=0.3, step=0.05, 
+                                                       label="Detection Confidence")
+                        
+                        gr.Markdown("### 🔧 Duplicate Filtering")
+                        overlap_threshold = gr.Slider(0.1, 1.0, value=0.7, step=0.05,
+                                                    label="Overlap Threshold (IoU)")
+                        distance_threshold = gr.Slider(5, 100, value=30, step=5,
+                                                     label="Distance Threshold (pixels)")
+                        
+                        digit_process_btn = gr.Button("🔍 Extract Reading", variant="primary", size="lg")
+                        
+                        # Results summary
+                        gr.Markdown("### 📊 Results")
+                        digit_results_text = gr.Textbox(label="Detection Summary", lines=8, interactive=False)
+                    
+                    with gr.Column(scale=2):
+                        # Visualization section
+                        gr.Markdown("### 👁️ Detection Visualization")
+                        
+                        with gr.Row():
+                            raw_detection_output = gr.Image(label="Raw Detections")
+                            filtered_detection_output = gr.Image(label="Filtered Detections")
                 
-                with gr.Row():
-                    segmentation_output = gr.Image(label="3. Segmentation Masks")
-                    result_output = gr.Image(label="4. Final Reading")
-        
-        # Event handlers
-        process_btn.click(
-            fn=process_uploaded_image,
-            inputs=[image_input, conf_threshold, scale_min, scale_max],
-            outputs=[detection_output, crop_output, segmentation_output, result_output, results_text]
-        )
-        
-        # Examples
-        gr.Markdown("## 📋 Usage Instructions")
-        gr.Markdown("""
-        1. **Upload Image**: Choose an image containing industrial meters
-        2. **Adjust Settings**: 
-           - Detection Confidence: Higher values = more strict detection
-           - Scale Range: Set the min/max values of your meter scale
-        3. **Process**: Click "Extract Readings" to run the complete pipeline
-        4. **View Results**: Check the visualization and summary
-        
-        **Supported Formats**: JPG, PNG, BMP
-        **Best Results**: Clear, well-lit images with visible meter faces
-        """)
+                # Event handlers for digit tab
+                digit_process_btn.click(
+                    fn=process_digit_image,
+                    inputs=[digit_image_input, digit_conf_threshold, overlap_threshold, distance_threshold],
+                    outputs=[raw_detection_output, filtered_detection_output, digit_results_text]
+                )
+                
+                # Examples for digit reading
+                gr.Markdown("### 📋 Usage Instructions")
+                gr.Markdown("""
+                1. **Upload Image**: Choose an image containing LCD digital displays
+                2. **Adjust Detection Settings**: 
+                   - Detection Confidence: Lower values detect more digits but may include false positives
+                3. **Configure Duplicate Filtering**:
+                   - Overlap Threshold: Higher values are more strict about overlapping detections
+                   - Distance Threshold: Minimum distance between same digits to be considered separate
+                4. **Process**: Click "Extract Reading" to analyze the display
+                5. **View Results**: Check both raw and filtered detections
+                
+                **Tips**:
+                - For clear displays: Use higher confidence (0.5-0.7)
+                - For blurry/poor quality: Use lower confidence (0.2-0.4)
+                - Adjust distance threshold based on digit spacing in your displays
+                
+                **Supported**: Numbers 0-9, decimal points, multi-digit readings
+                """)
     
     return interface
 

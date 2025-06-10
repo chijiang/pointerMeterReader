@@ -73,7 +73,7 @@ def create_release_info():
     """创建发布信息文件"""
     release_info = {
         "version": "v1.0.0",
-        "release_date": "2025-01-XX",
+        "release_date": "2025-06-09",
         "description": "工业指针式仪表读数识别系统完整版本",
         "components": {
             "detection_model": {
