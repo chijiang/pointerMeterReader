@@ -788,24 +788,49 @@ class MeterReadingApp:
                     # Step 3: Segmentation
                     segmentation_mask = self.segmentor.segment_meter(cropped_meter)
                     
-                    # Step 4: Reading extraction
+                    # Step 4: Reading extraction using improved method
                     self.reader.scale_beginning = scale_min
                     self.reader.scale_end = scale_max
-                    reading = self.reader.process_single_meter(cropped_meter, segmentation_mask)
+                    
+                    # 检查是否有改进的方法
+                    if hasattr(self.reader, 'process_single_meter_improved'):
+                        # 使用改进的方法，获取读数和几何信息
+                        reading_result = self.reader.process_single_meter_improved(cropped_meter, segmentation_mask)
+                        
+                        print(reading_result)
+
+                        if isinstance(reading_result, tuple) and len(reading_result) == 2:
+                            reading, geometry_info = reading_result
+                        else:
+                            # 向后兼容：如果返回的不是元组，就是旧的格式
+                            reading = reading_result
+                            geometry_info = None
+                    else:
+                        # 使用原始方法
+                        reading = self.reader.process_single_meter(cropped_meter, segmentation_mask)
+                        geometry_info = None
                     
                     if reading is not None:
-                        results['readings'].append({
+                        reading_info = {
                             'meter_id': i,
                             'reading': reading,
                             'confidence': detection['confidence'],
                             'bbox': detection['bbox']
-                        })
+                        }
+                        
+                        # 如果有几何信息，添加到结果中
+                        if geometry_info is not None:
+                            reading_info['geometry_info'] = geometry_info
+                        
+                        results['readings'].append(reading_info)
                     
                     # Generate visualizations
                     vis_detection = self._visualize_detection(image, [detection])
                     vis_crop = cropped_meter
                     vis_segmentation = self._visualize_segmentation(cropped_meter, segmentation_mask)
-                    vis_result = self._visualize_reading_result(cropped_meter, segmentation_mask, reading)
+                    
+                    # 传递几何信息给可视化方法
+                    vis_result = self._visualize_reading_result(cropped_meter, segmentation_mask, reading, geometry_info)
                     
                     results['visualizations'][f'meter_{i}'] = {
                         'detection': vis_detection,
@@ -885,12 +910,21 @@ class MeterReadingApp:
         
         return vis_img
     
-    def _visualize_reading_result(self, image: np.ndarray, mask: np.ndarray, reading: Optional[float]) -> np.ndarray:
-        """Visualize final reading result"""
+    def _visualize_reading_result(self, image: np.ndarray, mask: np.ndarray, reading: Optional[float], 
+                                 geometry_info: Optional[Dict] = None) -> np.ndarray:
+        """Visualize final reading result with geometric annotations"""
         if reading is None:
-            return image
+            vis_img = image.copy()
+            text = f"Reading: Failed"
+            cv2.putText(vis_img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            return vis_img
         
-        # Use the reader's visualization method
+        # 如果有几何信息，使用改进的可视化
+        if geometry_info is not None:
+            vis_img = self._visualize_improved_geometry(image, reading, geometry_info)
+            return vis_img
+        
+        # 否则使用原来的方法
         try:
             # Extract components for visualization
             pointer_mask = self.reader.threshold_by_category(mask, 1)
@@ -911,6 +945,101 @@ class MeterReadingApp:
         vis_img = image.copy()
         text = f"Reading: {reading:.3f}"
         cv2.putText(vis_img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        return vis_img
+    
+    def _visualize_improved_geometry(self, image: np.ndarray, reading: float, 
+                                   geometry_info: Dict) -> np.ndarray:
+        """
+        创建带有几何标注的可视化图像
+        
+        Args:
+            image: 原始图像
+            reading: 读数值
+            geometry_info: 几何信息字典
+            
+        Returns:
+            标注后的可视化图像
+        """
+        vis_img = image.copy()
+        
+        # 从几何信息中提取数据
+        circle_center = geometry_info['circle_center']
+        radius = geometry_info['radius']
+        scale_locations = geometry_info['scale_locations']
+        pointer_line = geometry_info['pointer_line']
+        intersection_point = geometry_info['intersection_point']
+        all_intersections = geometry_info.get('all_intersections', [intersection_point])
+        
+        # 1. 绘制刻度圆 (黄色，较细的线)
+        cv2.circle(vis_img, (int(circle_center[0]), int(circle_center[1])), 
+                   int(radius), (0, 255, 255), 2)
+    
+        print("RADIUS ", int(radius))
+        
+        # 2. 绘制刻度圆心 (绿色圆点)
+        cv2.circle(vis_img, (int(circle_center[0]), int(circle_center[1])), 4, (0, 255, 0), -1)
+        
+        # 3. 绘制刻度起始和结束点 (红色圆点)
+        cv2.circle(vis_img, scale_locations[0], 4, (0, 0, 255), -1)
+        cv2.circle(vis_img, scale_locations[1], 4, (0, 0, 255), -1)
+        
+        # 4. 绘制指针直线 (蓝色，较粗的线)
+        cv2.line(vis_img, 
+                 (int(pointer_line[0][0]), int(pointer_line[0][1])),
+                 (int(pointer_line[1][0]), int(pointer_line[1][1])),
+                 (255, 0, 0), 3)
+        
+        # 5. 绘制所有交点 (洋红色圆点)
+        for point in all_intersections:
+            cv2.circle(vis_img, (int(point[0]), int(point[1])), 3, (255, 0, 255), -1)
+        
+        # 6. 特别标注使用的交点 (洋红色圆圈)
+        cv2.circle(vis_img, (int(intersection_point[0]), int(intersection_point[1])), 
+                   8, (255, 0, 255), 2)
+        
+        # 7. 添加图例和读数信息
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        thickness = 2
+        
+        # 主要读数
+        text = f"Reading: {reading:.2f}"
+        cv2.putText(vis_img, text, (10, 30), font, 1.0, (255, 255, 255), thickness)
+        
+        # 几何信息
+        y_offset = 60
+        info_texts = [
+            f"Scale Circle: Center({circle_center[0]:.0f}, {circle_center[1]:.0f}), R={radius:.0f}",
+            f"Intersection: ({intersection_point[0]:.0f}, {intersection_point[1]:.0f})",
+            f"Scale Range: {self.reader.scale_beginning} - {self.reader.scale_end}"
+        ]
+        
+        for i, text in enumerate(info_texts):
+            y_pos = y_offset + i * 25
+            # 添加背景矩形使文字更清晰
+            text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+            cv2.rectangle(vis_img, (5, y_pos - 18), (text_size[0] + 10, y_pos + 5), (0, 0, 0), -1)
+            cv2.putText(vis_img, text, (8, y_pos), font, font_scale, (255, 255, 255), thickness)
+        
+        # 8. 添加颜色图例
+        legend_y = vis_img.shape[0] - 120
+        legend_items = [
+            ("Scale Circle", (0, 255, 255)),
+            ("Scale Center", (0, 255, 0)),
+            ("Scale Points", (0, 0, 255)),
+            ("Pointer Line", (255, 0, 0)),
+            ("Intersection", (255, 0, 255))
+        ]
+        
+        for i, (label, color) in enumerate(legend_items):
+            y_pos = legend_y + i * 20
+            # 绘制颜色标记
+            cv2.rectangle(vis_img, (10, y_pos - 8), (25, y_pos + 8), color, -1)
+            # 添加标签背景
+            text_size = cv2.getTextSize(label, font, 0.5, 1)[0]
+            cv2.rectangle(vis_img, (30, y_pos - 12), (35 + text_size[0], y_pos + 5), (0, 0, 0), -1)
+            cv2.putText(vis_img, label, (32, y_pos), font, 0.5, (255, 255, 255), 1)
+        
         return vis_img
 
 
@@ -975,12 +1104,327 @@ class DigitReadingApp:
         return results
 
 
+class LEDColorDetector:
+    """YOLO-based LED color detection"""
+    
+    def __init__(self, model_path: str):
+        """Initialize LED color detector with trained model"""
+        if os.path.exists(model_path):
+            self.model = YOLO(model_path)
+            print(f"✅ Loaded LED color detection model: {model_path}")
+        else:
+            print(f"⚠️ LED color model not found at {model_path}, using base YOLO")
+            self.model = YOLO("yolo11n.pt")
+        
+        # Define class names for LED colors
+        self.class_names = ['green', 'red', 'yellow']
+        self.class_colors = {
+            'green': (0, 255, 0),    # Green
+            'red': (0, 0, 255),      # Red  
+            'yellow': (0, 255, 255)  # Yellow
+        }
+        
+    def detect_led_colors(self, image: np.ndarray, conf_threshold: float = 0.25) -> List[Dict]:
+        """
+        Detect LED colors in image
+        
+        Args:
+            image: Input image (BGR format)
+            conf_threshold: Confidence threshold for detection
+            
+        Returns:
+            List of detection results with LED color information
+        """
+        results = self.model(image, conf=conf_threshold)
+        
+        detections = []
+        for r in results:
+            boxes = r.boxes
+            if boxes is not None:
+                for i in range(len(boxes)):
+                    x1, y1, x2, y2 = boxes.xyxy[i].cpu().numpy()
+                    conf = boxes.conf[i].cpu().numpy()
+                    cls = int(boxes.cls[i].cpu().numpy())
+                    
+                    # Get class name
+                    if hasattr(r, 'names') and cls in r.names:
+                        class_name = r.names[cls]
+                    elif cls < len(self.class_names):
+                        class_name = self.class_names[cls]
+                    else:
+                        class_name = f"class_{cls}"
+                    
+                    detections.append({
+                        'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                        'confidence': float(conf),
+                        'class_id': cls,
+                        'class': class_name,
+                        'center_x': (x1 + x2) / 2,
+                        'center_y': (y1 + y2) / 2,
+                        'area': (x2 - x1) * (y2 - y1)
+                    })
+        
+        return detections
+    
+    def analyze_led_status(self, detections: List[Dict]) -> Dict[str, Any]:
+        """
+        Analyze LED status from detections
+        
+        Args:
+            detections: List of LED detections
+            
+        Returns:
+            Analysis results including counts and status
+        """
+        analysis = {
+            'total_leds': len(detections),
+            'color_counts': {'green': 0, 'red': 0, 'yellow': 0},
+            'color_percentages': {'green': 0.0, 'red': 0.0, 'yellow': 0.0},
+            'dominant_color': None,
+            'status_summary': '',
+            'high_confidence_leds': [],
+            'low_confidence_leds': []
+        }
+        
+        if not detections:
+            analysis['status_summary'] = "No LEDs detected"
+            return analysis
+        
+        # Count colors
+        for det in detections:
+            color = det['class']
+            if color in analysis['color_counts']:
+                analysis['color_counts'][color] += 1
+            
+            # Categorize by confidence
+            if det['confidence'] >= 0.7:
+                analysis['high_confidence_leds'].append(det)
+            else:
+                analysis['low_confidence_leds'].append(det)
+        
+        # Calculate percentages
+        total = analysis['total_leds']
+        for color in analysis['color_counts']:
+            count = analysis['color_counts'][color]
+            analysis['color_percentages'][color] = (count / total * 100) if total > 0 else 0
+        
+        # Find dominant color
+        if analysis['color_counts']:
+            analysis['dominant_color'] = max(analysis['color_counts'], 
+                                           key=analysis['color_counts'].get)
+        
+        # Generate status summary
+        green_count = analysis['color_counts']['green']
+        red_count = analysis['color_counts']['red']
+        yellow_count = analysis['color_counts']['yellow']
+        
+        status_parts = []
+        if green_count > 0:
+            status_parts.append(f"{green_count} Green")
+        if red_count > 0:
+            status_parts.append(f"{red_count} Red")
+        if yellow_count > 0:
+            status_parts.append(f"{yellow_count} Yellow")
+        
+        if status_parts:
+            analysis['status_summary'] = " | ".join(status_parts)
+            
+            # Add operational status interpretation
+            if red_count > 0:
+                analysis['status_summary'] += " (⚠️ Alert: Red LEDs detected)"
+            elif yellow_count > 0:
+                analysis['status_summary'] += " (⚡ Warning: Yellow LEDs detected)"
+            elif green_count > 0:
+                analysis['status_summary'] += " (✅ Normal: Only Green LEDs)"
+        else:
+            analysis['status_summary'] = "No valid LED colors detected"
+        
+        return analysis
+    
+    def visualize_detections(self, image: np.ndarray, detections: List[Dict], 
+                           show_confidence: bool = True, show_labels: bool = True) -> np.ndarray:
+        """
+        Visualize LED color detections on image
+        
+        Args:
+            image: Input image
+            detections: List of detections
+            show_confidence: Whether to show confidence scores
+            show_labels: Whether to show class labels
+            
+        Returns:
+            Image with visualization
+        """
+        vis_img = image.copy()
+        
+        for det in detections:
+            bbox = det['bbox']
+            conf = det['confidence']
+            class_name = det['class']
+            
+            # Get color for this class
+            color = self.class_colors.get(class_name, (255, 255, 255))  # Default white
+            
+            # Draw bounding box with thicker line for higher confidence
+            thickness = max(2, int(conf * 4))
+            cv2.rectangle(vis_img, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, thickness)
+            
+            # Prepare label
+            label_parts = []
+            if show_labels:
+                label_parts.append(class_name.upper())
+            if show_confidence:
+                label_parts.append(f"{conf:.2f}")
+            
+            if label_parts:
+                label = ": ".join(label_parts)
+                
+                # Calculate label size and position
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.6
+                label_thickness = 2
+                label_size = cv2.getTextSize(label, font, font_scale, label_thickness)[0]
+                
+                # Background for label
+                label_bg_start = (bbox[0], bbox[1] - label_size[1] - 10)
+                label_bg_end = (bbox[0] + label_size[0] + 10, bbox[1])
+                cv2.rectangle(vis_img, label_bg_start, label_bg_end, color, -1)
+                
+                # Label text
+                text_pos = (bbox[0] + 5, bbox[1] - 5)
+                cv2.putText(vis_img, label, text_pos, font, font_scale, (0, 0, 0), label_thickness)
+            
+            # Draw center point
+            center = (int(det['center_x']), int(det['center_y']))
+            cv2.circle(vis_img, center, 4, color, -1)
+            cv2.circle(vis_img, center, 4, (0, 0, 0), 1)  # Black outline
+        
+        return vis_img
+    
+    def create_status_overlay(self, image: np.ndarray, analysis: Dict[str, Any]) -> np.ndarray:
+        """
+        Create an overlay showing LED status analysis
+        
+        Args:
+            image: Input image
+            analysis: Analysis results from analyze_led_status
+            
+        Returns:
+            Image with status overlay
+        """
+        overlay_img = image.copy()
+        h, w = image.shape[:2]
+        
+        # Create semi-transparent overlay
+        overlay = np.zeros((h, w, 3), dtype=np.uint8)
+        
+        # Define overlay area (top portion of image)
+        overlay_height = min(150, h // 4)
+        overlay[0:overlay_height, :] = (0, 0, 0)  # Black background
+        
+        # Blend overlay
+        alpha = 0.7
+        cv2.addWeighted(overlay_img, 1-alpha, overlay, alpha, 0, overlay_img)
+        
+        # Add text information
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        thickness = 2
+        text_color = (255, 255, 255)
+        
+        y_offset = 25
+        line_height = 25
+        
+        # Title
+        title = "LED Status Analysis"
+        cv2.putText(overlay_img, title, (10, y_offset), font, 0.8, (0, 255, 255), 2)
+        y_offset += line_height + 5
+        
+        # Total LEDs
+        total_text = f"Total LEDs: {analysis['total_leds']}"
+        cv2.putText(overlay_img, total_text, (10, y_offset), font, font_scale, text_color, thickness)
+        y_offset += line_height
+        
+        # Color breakdown
+        for color in ['green', 'red', 'yellow']:
+            count = analysis['color_counts'][color]
+            percentage = analysis['color_percentages'][color]
+            if count > 0:
+                color_text = f"{color.upper()}: {count} ({percentage:.1f}%)"
+                color_rgb = self.class_colors[color]
+                cv2.putText(overlay_img, color_text, (10, y_offset), font, font_scale, color_rgb, thickness)
+                y_offset += line_height
+        
+        # Status summary (bottom of overlay)
+        if analysis['status_summary']:
+            summary_lines = analysis['status_summary'].split(' | ')
+            for line in summary_lines:
+                if y_offset < overlay_height - 10:
+                    cv2.putText(overlay_img, line, (10, y_offset), font, 0.5, text_color, 1)
+                    y_offset += 20
+        
+        return overlay_img
+
+
+class LEDColorApp:
+    """LED color detection application"""
+    
+    def __init__(self):
+        """Initialize the LED color detection application"""
+        # Model path for LED color detection
+        self.led_model_path = "models/detection/led_color_model.pt"
+        
+        # Initialize LED color detector
+        self.led_detector = LEDColorDetector(self.led_model_path)
+        print(f"LED color app initialized with model: {self.led_model_path}")
+    
+    def process_led_image(self, image: np.ndarray, conf_threshold: float = 0.25,
+                         show_confidence: bool = True, show_labels: bool = True,
+                         show_status_overlay: bool = True) -> Dict[str, Any]:
+        """
+        Process image for LED color detection
+        
+        Args:
+            image: Input image (BGR format)
+            conf_threshold: Detection confidence threshold
+            show_confidence: Whether to show confidence scores in visualization
+            show_labels: Whether to show class labels in visualization
+            show_status_overlay: Whether to show status analysis overlay
+            
+        Returns:
+            Dictionary with processing results
+        """
+        results = {
+            'success': False,
+            'detections': [],
+            'analysis': {},
+            'error': None
+        }
+        
+        try:
+            # Step 1: Detect LED colors
+            detections = self.led_detector.detect_led_colors(image, conf_threshold)
+            results['detections'] = detections
+            
+            # Step 2: Analyze LED status
+            analysis = self.led_detector.analyze_led_status(detections)
+            results['analysis'] = analysis
+            
+            results['success'] = True
+            
+        except Exception as e:
+            results['error'] = f"Processing error: {str(e)}"
+        
+        return results
+
+
 def create_gradio_interface():
     """Create Gradio interface with tabs for different functionalities"""
     
     # Initialize apps
     meter_app = MeterReadingApp()
     digit_app = DigitReadingApp()
+    led_app = LEDColorApp()
     
     def process_uploaded_image(image, conf_threshold, scale_min, scale_max):
         """Process uploaded image and return results for meter reading"""
@@ -1098,12 +1542,110 @@ def create_gradio_interface():
         
         return raw_vis_rgb, filtered_vis_rgb, summary_text
     
-    # Create interface with tabs
-    with gr.Blocks(title="Meter Reading Extraction", theme=gr.themes.Soft()) as interface:
-        gr.Markdown("""
-        # 🔧 Industrial Meter & LCD Display Reading System
+    def process_led_color_image(image, conf_threshold, show_confidence, show_labels, show_status_overlay):
+        """Process LED color image and return results"""
+        if image is None:
+            return None, None, "Please upload an image"
         
-        AI-powered system for extracting readings from industrial meters and LCD displays.
+        # Convert PIL to OpenCV format
+        image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        
+        # Process image
+        results = led_app.process_led_image(image_cv, conf_threshold, 
+                                          show_confidence, show_labels, show_status_overlay)
+        
+        if not results['success']:
+            error_msg = results.get('error', 'Unknown error occurred')
+            return None, None, error_msg
+        
+        # Prepare visualizations
+        detections_vis = led_app.led_detector.visualize_detections(
+            image_cv, results['detections'], show_confidence, show_labels)
+        
+        status_overlay_vis = led_app.led_detector.create_status_overlay(
+            image_cv, results['analysis']) if show_status_overlay else detections_vis
+        
+        # Convert BGR to RGB for display
+        detections_vis_rgb = cv2.cvtColor(detections_vis, cv2.COLOR_BGR2RGB)
+        status_overlay_vis_rgb = cv2.cvtColor(status_overlay_vis, cv2.COLOR_BGR2RGB)
+        
+        # Create detailed analysis text
+        analysis = results['analysis']
+        detections = results['detections']
+        
+        summary_text = f"🚦 LED颜色识别结果\n"
+        summary_text += f"{'='*50}\n\n"
+        
+        # Overall status
+        summary_text += f"🎯 系统状态: {analysis['status_summary']}\n\n"
+        
+        # Statistics
+        summary_text += f"📊 检测统计:\n"
+        summary_text += f"  🔍 总LED数量: {analysis['total_leds']}\n"
+        
+        if analysis['total_leds'] > 0:
+            summary_text += f"  🟢 绿色LED: {analysis['color_counts']['green']} ({analysis['color_percentages']['green']:.1f}%)\n"
+            summary_text += f"  🔴 红色LED: {analysis['color_counts']['red']} ({analysis['color_percentages']['red']:.1f}%)\n"
+            summary_text += f"  🟡 黄色LED: {analysis['color_counts']['yellow']} ({analysis['color_percentages']['yellow']:.1f}%)\n"
+            
+            if analysis['dominant_color']:
+                summary_text += f"  🎨 主导颜色: {analysis['dominant_color'].upper()}\n"
+        
+        summary_text += f"\n⚙️ 检测参数:\n"
+        summary_text += f"  置信度阈值: {conf_threshold}\n"
+        summary_text += f"  显示置信度: {'是' if show_confidence else '否'}\n"
+        summary_text += f"  显示标签: {'是' if show_labels else '否'}\n"
+        summary_text += f"  状态覆盖: {'是' if show_status_overlay else '否'}\n"
+        
+        # High confidence detections
+        high_conf_count = len(analysis['high_confidence_leds'])
+        low_conf_count = len(analysis['low_confidence_leds'])
+        
+        if high_conf_count > 0 or low_conf_count > 0:
+            summary_text += f"\n🎯 置信度分析:\n"
+            summary_text += f"  ✅ 高置信度 (≥0.7): {high_conf_count} 个LED\n"
+            summary_text += f"  ⚠️ 低置信度 (<0.7): {low_conf_count} 个LED\n"
+        
+        # Detailed detections
+        if detections:
+            summary_text += f"\n🔍 详细检测结果:\n"
+            # Sort by confidence (highest first)
+            sorted_dets = sorted(detections, key=lambda x: x['confidence'], reverse=True)
+            for i, det in enumerate(sorted_dets[:10]):  # Show top 10
+                color_emoji = {'green': '🟢', 'red': '🔴', 'yellow': '🟡'}.get(det['class'], '⚪')
+                pos_x = int(det['center_x'])
+                pos_y = int(det['center_y'])
+                area = int(det['area'])
+                summary_text += f"  {i+1}. {color_emoji} {det['class'].upper()} "
+                summary_text += f"(置信度: {det['confidence']:.3f}, 位置: {pos_x},{pos_y}, 面积: {area}px²)\n"
+            
+            if len(sorted_dets) > 10:
+                summary_text += f"  ... 以及其他 {len(sorted_dets)-10} 个检测结果\n"
+        
+        # Operational recommendations
+        summary_text += f"\n💡 操作建议:\n"
+        red_count = analysis['color_counts']['red']
+        yellow_count = analysis['color_counts']['yellow']
+        green_count = analysis['color_counts']['green']
+        
+        if red_count > 0:
+            summary_text += f"  🚨 发现 {red_count} 个红色LED，建议立即检查系统状态\n"
+        if yellow_count > 0:
+            summary_text += f"  ⚠️ 发现 {yellow_count} 个黄色LED，建议关注系统警告\n"
+        if green_count > 0 and red_count == 0 and yellow_count == 0:
+            summary_text += f"  ✅ 系统正常，所有LED均为绿色状态\n"
+        
+        if low_conf_count > 0:
+            summary_text += f"  🔧 有 {low_conf_count} 个低置信度检测，建议调整图像质量或检测参数\n"
+        
+        return detections_vis_rgb, status_overlay_vis_rgb, summary_text
+    
+    # Create interface with tabs
+    with gr.Blocks(title="Industrial Meter & LED Detection System", theme=gr.themes.Soft()) as interface:
+        gr.Markdown("""
+        # 🔧 Industrial Meter, LCD Display & LED Status Detection System -Demo Page-
+        
+        AI-powered system for extracting readings from industrial meters, LCD displays, and detecting LED status indicators.
         """)
         
         with gr.Tabs():
@@ -1239,6 +1781,94 @@ def create_gradio_interface():
                 - Adjust distance threshold based on digit spacing in your displays
                 
                 **Supported**: Numbers 0-9, decimal points, multi-digit readings
+                """)
+            
+            # Tab 3: LED Color Detection
+            with gr.TabItem("🚦 LED Status Detection"):
+                gr.Markdown("""
+                ## LED Color Status Detection
+                
+                Upload an image containing LED indicators to automatically detect and analyze their colors and status.
+                
+                **Features:** 
+                - Detects Green, Red, and Yellow LEDs
+                - Provides operational status analysis
+                - Confidence-based filtering
+                - Real-time status overlay
+                """)
+                
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        # Input section
+                        gr.Markdown("### 📤 Input")
+                        led_image_input = gr.Image(type="pil", label="Upload LED Panel Image")
+                        
+                        gr.Markdown("### ⚙️ Detection Settings")
+                        led_conf_threshold = gr.Slider(0.1, 0.9, value=0.25, step=0.05, 
+                                                     label="Detection Confidence")
+                        
+                        gr.Markdown("### 🎨 Visualization Options")
+                        show_confidence = gr.Checkbox(value=True, label="Show Confidence Scores")
+                        show_labels = gr.Checkbox(value=True, label="Show Color Labels")
+                        show_status_overlay = gr.Checkbox(value=True, label="Show Status Analysis Overlay")
+                        
+                        led_process_btn = gr.Button("🚦 Analyze LED Status", variant="primary", size="lg")
+                        
+                        # Results summary
+                        gr.Markdown("### 📊 Analysis Results")
+                        led_results_text = gr.Textbox(label="LED Status Analysis", lines=12, interactive=False)
+                    
+                    with gr.Column(scale=2):
+                        # Visualization section
+                        gr.Markdown("### 👁️ Detection Visualization")
+                        
+                        with gr.Row():
+                            led_detection_output = gr.Image(label="LED Detections")
+                            led_status_output = gr.Image(label="Status Analysis Overlay")
+                
+                # Event handlers for LED tab
+                led_process_btn.click(
+                    fn=process_led_color_image,
+                    inputs=[led_image_input, led_conf_threshold, show_confidence, show_labels, show_status_overlay],
+                    outputs=[led_detection_output, led_status_output, led_results_text]
+                )
+                
+                # Examples for LED detection
+                gr.Markdown("### 📋 Usage Instructions")
+                gr.Markdown("""
+                1. **Upload Image**: Choose an image containing LED indicators or control panels
+                2. **Adjust Detection Settings**: 
+                   - Detection Confidence: Lower values detect more LEDs but may include false positives
+                   - Recommended: 0.25-0.5 for most industrial panels
+                3. **Configure Visualization**:
+                   - Show Confidence: Display detection confidence scores
+                   - Show Labels: Display color labels (GREEN/RED/YELLOW)
+                   - Status Overlay: Show analysis summary on image
+                4. **Process**: Click "Analyze LED Status" to detect and analyze LEDs
+                5. **Interpret Results**: 
+                   - 🟢 Green LEDs typically indicate normal operation
+                   - 🔴 Red LEDs usually signal alerts or errors
+                   - 🟡 Yellow LEDs often represent warnings or standby states
+                
+                **Tips**:
+                - For bright/clear LEDs: Use higher confidence (0.4-0.7)
+                - For dim/distant LEDs: Use lower confidence (0.15-0.3)
+                - Ensure good lighting and focus for best results
+                - Multiple LED panels can be analyzed in a single image
+                
+                **Applications**: Industrial control panels, server status indicators, equipment monitoring, safety systems
+                """)
+                
+                # LED Status Legend
+                gr.Markdown("### 🎯 LED Status Interpretation")
+                gr.Markdown("""
+                | LED Color | Typical Meaning | Action Required |
+                |-----------|----------------|-----------------|
+                | 🟢 **Green** | Normal Operation, System OK | None - Continue monitoring |
+                | 🔴 **Red** | Alert, Error, Emergency Stop | **Immediate attention required** |
+                | 🟡 **Yellow** | Warning, Standby, Maintenance | Check system status |
+                
+                **Note**: LED meanings may vary by equipment manufacturer and application. Always refer to your equipment manual for specific interpretations.
                 """)
     
     return interface

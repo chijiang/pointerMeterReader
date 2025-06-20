@@ -207,7 +207,8 @@ class MeterDetectionTrainer:
         print("🚀 Starting YOLOv10 training...")
         
         # 准备数据集
-        dataset_config_path = self.prepare_yolo_dataset()
+        # dataset_config_path = self.prepare_yolo_dataset()
+        dataset_config_path = self.project_root / "data" / "detection_yolo" / "dataset.yaml"
         
         # 初始化模型
         model_name = self.config.get('model', 'yolov10n.pt')

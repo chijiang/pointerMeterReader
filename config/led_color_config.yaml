@@ -1,0 +1,44 @@
+# LED颜色识别模型训练配置文件
+# 用于训练识别LED灯颜色（绿色、红色、黄色）的YOLO模型
+
+# 模型配置
+model:
+  name: "yolo11n.pt"  # 使用YOLO11 nano版本，轻量级适合LED识别
+  pretrained: true
+
+# 训练配置
+training:
+  epochs: 500          # 训练轮数
+  imgsz: 640          # 输入图像尺寸
+  batch: 16           # 批次大小
+  lr0: 0.01           # 初始学习率
+  weight_decay: 0.0005 # 权重衰减
+  warmup_epochs: 3    # 预热轮数
+  patience: 50        # 早停耐心值
+  save_period: 10     # 模型保存间隔
+  cache: true        # 数据缓存
+  workers: 8          # 数据加载器工作进程数
+  optimizer: "auto"   # 优化器
+  seed: 0             # 随机种子
+  deterministic: true # 确定性训练
+  cos_lr: false       # 余弦学习率调度
+  close_mosaic: 10    # 关闭马赛克增强的轮数
+  resume: false       # 是否恢复训练
+  amp: true           # 自动混合精度
+  fraction: 1.0       # 使用数据的比例
+  overlap_mask: true  # 重叠掩码
+  mask_ratio: 4       # 掩码比例
+  dropout: 0.0        # Dropout比例
+
+# 设备配置
+device: "auto"  # 自动选择设备：auto/cpu/mps/0/1/...
+
+# 数据增强配置
+data:
+  augmentation: true        # 启用数据增强
+  mosaic: 1.0              # 马赛克增强概率
+  mixup: 0.0               # Mixup增强概率
+  copy_paste: 0.8          # 复制粘贴增强概率
+  auto_augment: "randaugment"  # 自动增强策略
+  erasing: 0.4             # 随机擦除概率
+  crop_fraction: 1.0       # 裁剪比例 

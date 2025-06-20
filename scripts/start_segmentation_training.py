@@ -76,6 +76,7 @@ def main():
         # 检查是否已经统一过数据
         unified_dir = Path(args.data_dir) / "SegmentationClass_unified"
         if unified_dir.exists():
+            print(unified_dir)
             print("检测到已统一的数据目录，跳过数据格式统一步骤")
         else:
             cmd_unify = [

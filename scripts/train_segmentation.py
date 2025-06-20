@@ -275,6 +275,9 @@ class SegmentationTrainer:
         # 初始化模型
         self.model = self._create_model()
         
+        # 加载预训练权重（如果指定）
+        self._load_pretrained_weights()
+        
         # 初始化数据加载器
         self.train_loader, self.val_loader = self._create_data_loaders()
         
@@ -377,6 +380,89 @@ class SegmentationTrainer:
         
         return model
     
+    def _load_pretrained_weights(self):
+        """加载预训练权重"""
+        model_config = self.config['model']
+        resume_from = model_config.get('resume_from', None)
+        
+        if resume_from and os.path.exists(resume_from):
+            logging.info(f"加载预训练权重: {resume_from}")
+            
+            try:
+                checkpoint = torch.load(resume_from, map_location=self.device, weights_only=False)
+                
+                # 如果是完整的checkpoint（包含训练状态）
+                if 'model_state_dict' in checkpoint:
+                    model_state_dict = checkpoint['model_state_dict']
+                    # 可选择是否恢复训练状态
+                    if model_config.get('resume_training_state', False):
+                        self.current_epoch = checkpoint.get('epoch', 0)
+                        self.best_miou = checkpoint.get('best_miou', 0.0)
+                        logging.info(f"恢复训练状态: epoch={self.current_epoch}, best_miou={self.best_miou}")
+                else:
+                    # 如果只是模型权重
+                    model_state_dict = checkpoint
+                
+                # 处理类别数不匹配的情况
+                current_num_classes = self.config['model']['num_classes']
+                self._load_weights_with_class_adaptation(model_state_dict, current_num_classes)
+                
+                logging.info("预训练权重加载成功")
+                
+            except Exception as e:
+                logging.warning(f"加载预训练权重失败: {e}")
+                logging.info("将使用随机初始化的权重")
+        
+        # 冻结骨干网络（如果指定）
+        if model_config.get('freeze_backbone', False):
+            self._freeze_backbone()
+    
+    def _load_weights_with_class_adaptation(self, state_dict, target_num_classes):
+        """加载权重并适配类别数"""
+        model_dict = self.model.state_dict()
+        
+        # 过滤掉分类器层（如果类别数不匹配）
+        filtered_dict = {}
+        classifier_keys = ['classifier.4.weight', 'classifier.4.bias', 
+                          'aux_classifier.4.weight', 'aux_classifier.4.bias']
+        
+        for k, v in state_dict.items():
+            if k in classifier_keys:
+                # 检查分类器层的输出维度
+                if k.endswith('.weight'):
+                    if v.shape[0] != target_num_classes:
+                        logging.info(f"跳过分类器层 {k}: 形状不匹配 {v.shape[0]} vs {target_num_classes}")
+                        continue
+                elif k.endswith('.bias'):
+                    if v.shape[0] != target_num_classes:
+                        logging.info(f"跳过分类器层 {k}: 形状不匹配 {v.shape[0]} vs {target_num_classes}")
+                        continue
+            
+            if k in model_dict and v.shape == model_dict[k].shape:
+                filtered_dict[k] = v
+            else:
+                logging.info(f"跳过层 {k}: 形状不匹配或不存在")
+        
+        # 加载过滤后的权重
+        model_dict.update(filtered_dict)
+        self.model.load_state_dict(model_dict)
+        
+        logging.info(f"成功加载 {len(filtered_dict)}/{len(state_dict)} 层权重")
+    
+    def _freeze_backbone(self):
+        """冻结骨干网络"""
+        logging.info("冻结骨干网络参数")
+        
+        for name, param in self.model.named_parameters():
+            # 只训练分类器层
+            if 'classifier' not in name and 'aux_classifier' not in name:
+                param.requires_grad = False
+                
+        # 统计可训练参数
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.model.parameters())
+        logging.info(f"可训练参数: {trainable_params:,} / {total_params:,}")
+    
     def _create_data_loaders(self):
         """创建数据加载器"""
         data_config = self.config['data']
@@ -425,23 +511,29 @@ class SegmentationTrainer:
         # MPS设备不支持pin_memory
         pin_memory = data_config['pin_memory'] and self.device.type != 'mps'
         
+        # 确保batch_size不会导致最后一个batch只有1个样本
+        batch_size = data_config['batch_size']
+        
         train_loader = DataLoader(
             train_dataset,
-            batch_size=data_config['batch_size'],
+            batch_size=batch_size,
             shuffle=data_config['shuffle'],
             num_workers=data_config['num_workers'],
-            pin_memory=pin_memory
+            pin_memory=pin_memory,
+            drop_last=True  # 丢弃最后一个不完整的batch
         )
         
         val_loader = DataLoader(
             val_dataset,
-            batch_size=data_config['batch_size'],
+            batch_size=batch_size,
             shuffle=False,
             num_workers=data_config['num_workers'],
-            pin_memory=pin_memory
+            pin_memory=pin_memory,
+            drop_last=False  # 验证时不丢弃，但需要特殊处理
         )
         
         logging.info(f"训练集大小: {len(train_dataset)}, 验证集大小: {len(val_dataset)}")
+        logging.info(f"训练批次数: {len(train_loader)}, 验证批次数: {len(val_loader)}")
         
         return train_loader, val_loader
     
@@ -849,6 +941,17 @@ def main():
         help="配置文件路径"
     )
     parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="预训练权重路径"
+    )
+    parser.add_argument(
+        "--freeze-backbone",
+        action="store_true",
+        help="冻结骨干网络"
+    )
+    parser.add_argument(
         "--export-only",
         action="store_true",
         help="只导出模型，不进行训练"
@@ -865,6 +968,12 @@ def main():
     # 加载配置
     with open(args.config, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
+    
+    # 命令行参数覆盖配置文件
+    if args.resume:
+        config['model']['resume_from'] = args.resume
+    if args.freeze_backbone:
+        config['model']['freeze_backbone'] = True
     
     # 创建训练器
     trainer = SegmentationTrainer(config)
