@@ -56,14 +56,18 @@ pip install -r requirements.txt
 ### 2. 启动Web应用
 
 ```bash
-python app.py
-# 或
 python main.py
 ```
 
 访问 `http://localhost:7860` 使用Web界面。
 
 ## 📖 脚本使用指南
+
+### 0. 检测模型训练
+
+```bash
+python scripts/train_detection.py --config config/detection_config.yaml
+```
 
 ### 1. 分割模型训练流水线 (`segmentation_pipeline.py`)
 
@@ -207,19 +211,6 @@ target-dir/
 
 完整示例脚本见 `examples/pointer_meter_detection_example.sh`。
 
-## 模型训练
-
-### 检测模型训练
-
-```bash
-python scripts/train_detection.py --config config/detection_config.yaml
-```
-
-### 分割模型训练
-
-```bash
-python scripts/train_segmentation.py --config config/segmentation_config.yaml
-```
 
 ## 项目结构
 
