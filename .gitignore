@@ -14,3 +14,7 @@ data/
 outputs/
 models/
 runs/
+
+.cursor/
+.DS_Store
+temp/
