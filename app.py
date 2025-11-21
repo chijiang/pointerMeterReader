@@ -8,8 +8,8 @@ Pipeline:
 2. Crop -> DeepLabV3+ segmentation -> Generate masks
 3. Masks -> Reading extraction -> Final result
 
-Author: AI Assistant
-Date: 2024
+Author: Chijiang
+Date: 2025-11-21
 """
 
 import gradio as gr
