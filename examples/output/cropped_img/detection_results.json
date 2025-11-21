@@ -1,0 +1,143 @@
+{
+  "timestamp": "2025-11-21T19:20:44.039603",
+  "model_path": "models/detection/detection_model.pt",
+  "conf_threshold": 0.3,
+  "padding": 30,
+  "statistics": {
+    "total_images": 3,
+    "successful_detections": 3,
+    "total_meters_detected": 4,
+    "failed_images": []
+  },
+  "results": [
+    {
+      "image_path": "examples/example_data/original_img/20190830144734657.jpg",
+      "image_name": "20190830144734657.jpg",
+      "success": true,
+      "num_detections": 1,
+      "detections": [
+        {
+          "bbox": [
+            88,
+            453,
+            680,
+            1067
+          ],
+          "confidence": 0.8260726928710938
+        }
+      ],
+      "cropped_files": [
+        {
+          "filename": "20190830144734657.jpg",
+          "path": "examples/output/cropped_img/cropped/20190830144734657.jpg",
+          "bbox": [
+            88,
+            453,
+            680,
+            1067
+          ],
+          "confidence": 0.8260726928710938,
+          "size": [
+            657,
+            652
+          ]
+        }
+      ],
+      "visualization_path": "examples/output/cropped_img/visualizations/20190830144734657_detection.jpg"
+    },
+    {
+      "image_path": "examples/example_data/original_img/20190830160816714.jpg",
+      "image_name": "20190830160816714.jpg",
+      "success": true,
+      "num_detections": 1,
+      "detections": [
+        {
+          "bbox": [
+            1151,
+            353,
+            1422,
+            617
+          ],
+          "confidence": 0.9451183676719666
+        }
+      ],
+      "cropped_files": [
+        {
+          "filename": "20190830160816714.jpg",
+          "path": "examples/output/cropped_img/cropped/20190830160816714.jpg",
+          "bbox": [
+            1151,
+            353,
+            1422,
+            617
+          ],
+          "confidence": 0.9451183676719666,
+          "size": [
+            324,
+            331
+          ]
+        }
+      ],
+      "visualization_path": "examples/output/cropped_img/visualizations/20190830160816714_detection.jpg"
+    },
+    {
+      "image_path": "examples/example_data/original_img/20190830145856305.jpg",
+      "image_name": "20190830145856305.jpg",
+      "success": true,
+      "num_detections": 2,
+      "detections": [
+        {
+          "bbox": [
+            1403,
+            324,
+            1797,
+            720
+          ],
+          "confidence": 0.9606643915176392
+        },
+        {
+          "bbox": [
+            320,
+            310,
+            953,
+            939
+          ],
+          "confidence": 0.9481035470962524
+        }
+      ],
+      "cropped_files": [
+        {
+          "filename": "20190830145856305_meter_01.jpg",
+          "path": "examples/output/cropped_img/cropped/20190830145856305_meter_01.jpg",
+          "bbox": [
+            1403,
+            324,
+            1797,
+            720
+          ],
+          "confidence": 0.9606643915176392,
+          "size": [
+            456,
+            454
+          ]
+        },
+        {
+          "filename": "20190830145856305_meter_02.jpg",
+          "path": "examples/output/cropped_img/cropped/20190830145856305_meter_02.jpg",
+          "bbox": [
+            320,
+            310,
+            953,
+            939
+          ],
+          "confidence": 0.9481035470962524,
+          "size": [
+            689,
+            693
+          ]
+        }
+      ],
+      "visualization_path": "examples/output/cropped_img/visualizations/20190830145856305_detection.jpg"
+    }
+  ]
+}
