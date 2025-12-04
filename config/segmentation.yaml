@@ -1,0 +1,157 @@
+# SegFormer-B2 分割训练配置文件
+# 用于训练指针表盘的语义分割模型：背景、指针、刻度三分类
+
+# 模型配置
+model:
+  # SegFormer变体: nvidia/segformer-b0, b1, b2, b3, b4, b5
+  # B2提供精度与速度的良好平衡
+  name: "nvidia/segformer-b2-finetuned-ade-512-512"
+  num_classes: 3  # 背景、指针、刻度
+  pretrained: true
+
+# 数据配置
+# coco_data contains COCO polygon annotations that need conversion to masks
+# Use the existing tools/data_preparation/convert_coco_to_segmentation.py first
+data:
+  root_dir: "data/segmentation"  # After running convert_coco_to_segmentation.py
+  image_dir: "JPEGImages"
+  mask_dir: "SegmentationClass"  # Converted masks directory
+  split_dir: "ImageSets/Segmentation"
+
+  # Source COCO data (for conversion)
+  coco_source:
+    json_path: "data/coco_data/result_coco.json"
+    images_dir: "data/coco_data/images"
+
+  # 图像尺寸 - SegFormer推荐512x512以获得更好精度
+  image_size: 512
+
+  # 数据增强
+  augmentation:
+    resize: [512, 512]
+    random_crop: [480, 480]  # 稍小的裁剪以增加多样性
+    horizontal_flip: 0.5
+    vertical_flip: 0.2
+    rotation: 15
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+    gaussian_blur: 0.3
+    random_scale: [0.8, 1.2]  # 随机缩放
+
+  # 数据加载
+  batch_size: 8
+  num_workers: 4
+  pin_memory: true
+  shuffle: true
+
+# 训练配置
+training:
+  epochs: 100
+
+  # SegFormer推荐的学习率（较小，适合Transformer）
+  learning_rate: 6e-5
+  weight_decay: 0.01
+
+  # 学习率调度器 - 使用多项式衰减（SegFormer论文推荐）
+  scheduler:
+    type: "PolynomialLR"
+    power: 1.0  # 线性衰减
+    total_iters: null  # 自动设置为total_steps
+
+  # 预热
+  warmup:
+    enabled: true
+    epochs: 5
+    start_lr: 1e-7
+
+  # 早停
+  early_stopping:
+    patience: 15
+    min_delta: 0.001
+    monitor: "val_miou"
+
+  # 损失函数配置
+  loss:
+    type: "CrossEntropyLoss"
+    class_weights: [0.5, 2.0, 2.0]  # 背景、指针、刻度的权重
+    ignore_index: 255
+
+  # 优化器
+  optimizer: "AdamW"
+
+  # 梯度累积（如果显存不足）
+  gradient_accumulation_steps: 1
+
+  # 混合精度训练
+  mixed_precision: true
+
+# 验证配置
+validation:
+  interval: 1
+  metrics:
+    - "pixel_accuracy"
+    - "mean_iou"
+    - "class_iou"
+    - "dice_score"
+
+# 设备配置
+device: "auto"  # auto, cuda, mps, cpu
+
+# 保存配置
+save:
+  checkpoint_dir: "outputs/segmentation_segformer/checkpoints"
+  log_dir: "outputs/segmentation_segformer/logs"
+  best_model_path: "outputs/segmentation_segformer/best_model.pth"
+  save_interval: 10
+  save_top_k: 3
+
+# 可视化配置
+visualization:
+  save_predictions: true
+  prediction_dir: "outputs/segmentation_segformer/predictions"
+  num_samples: 10
+  class_colors:
+    0: [0, 0, 0]        # 背景 - 黑色
+    1: [255, 0, 0]      # 指针 - 红色
+    2: [0, 255, 0]      # 刻度 - 绿色
+
+# 推理配置
+inference:
+  model_path: "outputs/segmentation_segformer/best_model.pth"
+  output_dir: "outputs/segmentation_segformer/inference"
+
+# 导出配置
+export:
+  formats: ["onnx", "torchscript"]
+  output_dir: "outputs/segmentation_segformer/exported"
+  models_dir: "models/segmentation"  # 最终模型存放位置
+  onnx:
+    opset_version: 14
+    dynamic_axes:
+      input: {0: 'batch_size', 2: 'height', 3: 'width'}
+      output: {0: 'batch_size', 2: 'height', 3: 'width'}
+
+# 日志配置
+logging:
+  level: "INFO"
+  console: true
+  file: true
+  tensorboard: true
+  wandb: false  # 可选：使用Weights & Biases
+
+# 类别信息
+classes:
+  names: ["background", "pointer", "scale"]
+  colors: [[0, 0, 0], [255, 0, 0], [0, 255, 0]]
+
+# SegFormer特定配置
+segformer:
+  # 解码器配置
+  decoder_hidden_size: 256
+  # 是否冻结编码器的部分层
+  freeze_encoder: false
+  # 编码器层数冻结（如果freeze_encoder为true）
+  freeze_encoder_layers: 0

@@ -4,7 +4,7 @@ Meter Reading Extraction Script
 Based on the C++ implementation in meter_reader.cpp
 
 This script extracts numerical readings from segmented meter images using:
-1. Pointer and scale segmentation masks
+1. Pointer and scale segmentation masks (from SegFormer or DeepLabV3+)
 2. Geometric analysis of pointer position
 3. Angle-based calculation for final reading
 
@@ -12,6 +12,10 @@ Classes in segmentation mask:
 - 0: Background
 - 1: Pointer
 - 2: Scale/Dial
+
+Compatible with:
+- SegFormer (nvidia/segformer-b0-finetuned-ade-512-512)
+- DeepLabV3+ (legacy)
 """
 
 import cv2
@@ -61,32 +65,75 @@ class MeterReader:
     def get_scale_locations(self, scale_mask: np.ndarray) -> Optional[Tuple[Tuple[int, int], Tuple[int, int]]]:
         """
         Find scale start and end points
-        
+
         Args:
             scale_mask: Binary mask of scale pixels
-            
+
         Returns:
             ((start_x, start_y), (end_x, end_y)) or None if not found
         """
         height, width = scale_mask.shape
+
+        # Find all scale pixels
+        scale_pixels = np.where(scale_mask == 255)
+        if len(scale_pixels[0]) == 0:
+            print("   [Scale] No scale pixels found in mask")
+            return None
+
+        rows, cols = scale_pixels
+        print(f"   [Scale] Found {len(rows)} scale pixels")
+        print(f"   [Scale] Col range: {cols.min()} - {cols.max()}, Row range: {rows.min()} - {rows.max()}")
+
+        # Method 1: Try original left/right half approach
         beginning = None
         end = None
-        
-        # Scan from bottom to top
+
         for row in range(height - 1, -1, -1):
             for col in range(width):
                 if scale_mask[row, col] == 255:
-                    # Left half for beginning point
                     if col < width // 2 and beginning is None:
                         beginning = (col, row)
-                    # Right half for end point
                     if col >= width // 2 and end is None:
                         end = (col, row)
-            
-            # Found both points
             if beginning is not None and end is not None:
+                print(f"   [Scale] Method 1 (left/right): start={beginning}, end={end}")
                 return beginning, end
-        
+
+        # Method 2: If scale is only on one side, use leftmost and rightmost points
+        print("   [Scale] Method 1 failed, trying Method 2 (leftmost/rightmost)")
+
+        # Find leftmost point (lowest col value) - this is the start (0)
+        left_idx = np.argmin(cols)
+        start_point = (cols[left_idx], rows[left_idx])
+
+        # Find rightmost point (highest col value) - this is the end (max)
+        right_idx = np.argmax(cols)
+        end_point = (cols[right_idx], rows[right_idx])
+
+        # Make sure they're different points
+        if start_point != end_point:
+            print(f"   [Scale] Method 2: start={start_point}, end={end_point}")
+            return start_point, end_point
+
+        # Method 3: Use topmost and bottommost points
+        print("   [Scale] Method 2 failed, trying Method 3 (topmost/bottommost)")
+
+        top_idx = np.argmin(rows)
+        bottom_idx = np.argmax(rows)
+
+        top_point = (cols[top_idx], rows[top_idx])
+        bottom_point = (cols[bottom_idx], rows[bottom_idx])
+
+        if top_point != bottom_point:
+            # Determine which is start based on x position
+            if top_point[0] < bottom_point[0]:
+                print(f"   [Scale] Method 3: start={top_point}, end={bottom_point}")
+                return top_point, bottom_point
+            else:
+                print(f"   [Scale] Method 3: start={bottom_point}, end={top_point}")
+                return bottom_point, top_point
+
+        print("   [Scale] All methods failed")
         return None
     
     def get_center_location(self, image: np.ndarray) -> Optional[Tuple[float, float]]:
@@ -282,43 +329,76 @@ class MeterReader:
         
         return head_mid, tail_mid
     
-    def get_angle_ratio(self, scale_locations: Tuple[Tuple[int, int], Tuple[int, int]], 
+    def get_angle_ratio(self, scale_locations: Tuple[Tuple[int, int], Tuple[int, int]],
                        pointer_head: Tuple[float, float], center: Tuple[float, float]) -> float:
         """
         Calculate angle ratio of pointer position relative to scale range
-        
+
         Args:
             scale_locations: ((start_x, start_y), (end_x, end_y))
             pointer_head: (head_x, head_y)
             center: (center_x, center_y)
-            
+
         Returns:
             Angle ratio (0.0 to 1.0)
         """
-        # Calculate angles relative to positive x-axis
-        beginning_angle = math.atan2(center[1] - scale_locations[0][1], 
-                                   scale_locations[0][0] - center[0])
-        end_angle = math.atan2(center[1] - scale_locations[1][1], 
-                             scale_locations[1][0] - center[0])
-        
-        # Total angle span
-        total_angle = 2 * math.pi - (end_angle - beginning_angle)
-        
+        # Calculate angles relative to center
+        # Using standard math convention: angle from positive x-axis, counter-clockwise positive
+        # But in image coordinates, y increases downward, so we need to adjust
+
+        # Scale start angle (0 position, usually left side)
+        start_angle = math.atan2(scale_locations[0][1] - center[1],
+                                 scale_locations[0][0] - center[0])
+
+        # Scale end angle (max position, usually right side)
+        end_angle = math.atan2(scale_locations[1][1] - center[1],
+                               scale_locations[1][0] - center[0])
+
         # Pointer angle
-        pointer_angle = math.atan2(center[1] - pointer_head[1], 
-                                 pointer_head[0] - center[0])
-        
-        # Calculate pointer position relative to beginning
-        if pointer_head[1] > center[1] and pointer_head[0] < center[0]:
-            pointer_relative_angle = pointer_angle - beginning_angle
+        pointer_angle = math.atan2(pointer_head[1] - center[1],
+                                   pointer_head[0] - center[0])
+
+        # Debug output
+        print(f"   [Angle Debug] start_angle: {math.degrees(start_angle):.1f}°, end_angle: {math.degrees(end_angle):.1f}°, pointer_angle: {math.degrees(pointer_angle):.1f}°")
+
+        # Normalize angles to [0, 2*pi]
+        def normalize_angle(a):
+            while a < 0:
+                a += 2 * math.pi
+            while a >= 2 * math.pi:
+                a -= 2 * math.pi
+            return a
+
+        start_angle = normalize_angle(start_angle)
+        end_angle = normalize_angle(end_angle)
+        pointer_angle = normalize_angle(pointer_angle)
+
+        # Calculate the angular span from start to end (going clockwise in image coords)
+        # For a typical gauge: start is on the left (e.g., 225°), end is on the right (e.g., -45° = 315°)
+        if end_angle < start_angle:
+            # The scale crosses the 0° line
+            total_span = (2 * math.pi - start_angle) + end_angle
         else:
-            pointer_relative_angle = 2 * math.pi - (pointer_angle - beginning_angle)
-        
-        # Ensure positive angle
-        if pointer_relative_angle < 0:
-            pointer_relative_angle += 2 * math.pi
-        
-        angle_ratio = pointer_relative_angle / total_angle
+            total_span = end_angle - start_angle
+
+        # Calculate pointer position relative to start
+        if pointer_angle < start_angle and start_angle - pointer_angle > math.pi:
+            # Pointer is past 0°, need to add 2*pi
+            pointer_from_start = (2 * math.pi - start_angle) + pointer_angle
+        elif pointer_angle >= start_angle:
+            pointer_from_start = pointer_angle - start_angle
+        else:
+            # Pointer is before start (below zero on scale)
+            pointer_from_start = 0
+
+        # Handle wrap-around for pointers near the end
+        if pointer_from_start > total_span:
+            pointer_from_start = total_span
+
+        angle_ratio = pointer_from_start / total_span if total_span > 0 else 0
+
+        print(f"   [Angle Debug] total_span: {math.degrees(total_span):.1f}°, pointer_from_start: {math.degrees(pointer_from_start):.1f}°, ratio: {angle_ratio:.4f}")
+
         return max(0.0, min(1.0, angle_ratio))  # Clamp to [0, 1]
     
     def get_scale_value(self, angle_ratio: float) -> float:
@@ -374,11 +454,11 @@ class MeterReader:
     def process_single_meter(self, image: np.ndarray, mask: np.ndarray) -> Optional[float]:
         """
         Process a single meter image and extract reading
-        
+
         Args:
             image: Original meter image (BGR)
             mask: Segmentation mask with classes 0=background, 1=pointer, 2=scale
-            
+
         Returns:
             Scale reading value or None if extraction failed
         """
@@ -386,7 +466,14 @@ class MeterReader:
             # Extract pointer and scale masks
             pointer_mask = self.threshold_by_category(mask, 1)  # Pointer
             scale_mask = self.threshold_by_category(mask, 2)    # Scale
-            
+
+            # Debug logging
+            print(f"\n🔍 [MeterReader] Processing single meter:")
+            print(f"   - Image shape: {image.shape}")
+            print(f"   - Mask shape: {mask.shape}")
+            print(f"   - Pointer mask non-zero pixels: {np.sum(pointer_mask > 0)}")
+            print(f"   - Scale mask non-zero pixels: {np.sum(scale_mask > 0)}")
+
             if self.debug:
                 fig, axes = plt.subplots(1, 2, figsize=(12, 6))
                 axes[0].imshow(pointer_mask, cmap='gray')
@@ -397,41 +484,57 @@ class MeterReader:
                 axes[1].axis('off')
                 plt.tight_layout()
                 plt.show()
-            
+
             # Apply erosion to scale mask to remove noise
             kernel = np.ones((5, 5), np.uint8)
-            scale_mask = cv2.erode(scale_mask, kernel, iterations=1)
-            
+            scale_mask_eroded = cv2.erode(scale_mask, kernel, iterations=1)
+            print(f"   - Scale mask after erosion: {np.sum(scale_mask_eroded > 0)} pixels")
+
+            # If erosion removed too much, use original scale mask
+            if np.sum(scale_mask_eroded > 0) < 100:
+                print(f"   ⚠️ Erosion too aggressive, using original scale mask")
+                scale_mask_eroded = scale_mask
+
             if self.debug:
                 plt.figure(figsize=(8, 6))
-                plt.imshow(scale_mask, cmap='gray')
+                plt.imshow(scale_mask_eroded, cmap='gray')
                 plt.title("Scale Mask After Erosion")
                 plt.axis('off')
                 plt.show()
-            
+
             # Find scale start and end points
-            scale_locations = self.get_scale_locations(scale_mask)
+            scale_locations = self.get_scale_locations(scale_mask_eroded)
             if scale_locations is None:
-                print("Failed to find scale locations")
+                print("   ❌ Failed to find scale locations")
+                print(f"   - Possible reasons:")
+                print(f"     * No scale pixels in mask (class 2)")
+                print(f"     * Scale pixels not found in left/right halves")
+                print(f"     * Erosion removed all scale pixels")
                 return None
             
+            print(f"   ✅ Scale locations found: start={scale_locations[0]}, end={scale_locations[1]}")
+
             # Find meter center
             center = self.get_center_location(image)
             if center is None:
-                print("Failed to find meter center")
+                print("   ❌ Failed to find meter center")
                 return None
-            
+            print(f"   ✅ Meter center: {center}")
+
             # Find pointer locations
             pointer_locations = self.get_pointer_locations(pointer_mask, center)
             if pointer_locations is None:
-                print("Failed to find pointer locations")
+                print("   ❌ Failed to find pointer locations")
                 return None
-            
+            print(f"   ✅ Pointer locations: head={pointer_locations[0]}, tail={pointer_locations[1]}")
+
             # Calculate angle ratio
             angle_ratio = self.get_angle_ratio(scale_locations, pointer_locations[0], center)
-            
+            print(f"   ✅ Angle ratio: {angle_ratio:.4f}")
+
             # Convert to scale value
             scale_value = self.get_scale_value(angle_ratio)
+            print(f"   ✅ Final reading: {scale_value:.3f} (range: {self.scale_beginning} - {self.scale_end})")
             
             # Visualization for debugging
             if self.debug:

@@ -10,9 +10,9 @@ def main():
     
     print("Launching Gradio interface...")
     interface.launch(
-        server_name="0.0.0.0",  # Allow external access
-        server_port=7860,       # Default Gradio port
-        share=False,            # Set to True for public sharing
+        server_name="127.0.0.1",  # Localhost only
+        server_port=7860,         # Use different port to avoid conflict
+        share=False,              # Set to True for public sharing
         debug=True
     )
 

@@ -5,7 +5,7 @@ A complete pipeline for extracting readings from industrial meter displays
 
 Pipeline:
 1. Upload image -> YOLO detection -> Crop meter region
-2. Crop -> DeepLabV3+ segmentation -> Generate masks
+2. Crop -> SegFormer segmentation -> Generate masks
 3. Masks -> Reading extraction -> Final result
 
 Author: Chijiang
@@ -22,9 +22,8 @@ import os
 import sys
 from typing import Tuple, Optional, List, Dict, Any
 
-# Add scripts directory to path
-sys.path.append(str(Path(__file__).parent / "scripts"))
-from scripts.extract_meter_reading import MeterReader
+# Import meter reading module
+from scripts.meter_reading import MeterReader
 
 # Import ONNX runtime for segmentation
 import onnxruntime as ort
@@ -40,30 +39,35 @@ class MeterDetector:
     def detect_meters(self, image: np.ndarray, conf_threshold: float = 0.5) -> List[Dict]:
         """
         Detect meters in image
-        
+
         Args:
             image: Input image (BGR format)
             conf_threshold: Confidence threshold
-            
+
         Returns:
             List of detection results with bounding boxes
         """
         results = self.model(image, conf=conf_threshold)
-        
+
         detections = []
         for r in results:
             boxes = r.boxes
             if boxes is not None:
                 for box in boxes:
                     x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    conf = box.conf[0].cpu().numpy()
-                    
-                    detections.append({
-                        'bbox': [int(x1), int(y1), int(x2), int(y2)],
-                        'confidence': float(conf),
-                        'class': 'meter'
-                    })
-        
+                    conf = float(box.conf[0].cpu().numpy())
+                    cls_id = int(box.cls[0].cpu().numpy())
+                    cls_name = r.names.get(cls_id, 'unknown')
+
+                    # Only keep gauge detections (class 0: gauge, class 1: gauges)
+                    # Skip class 2 (numbers) as they are not meter regions
+                    if cls_id in [0, 1] or 'gauge' in cls_name.lower():
+                        detections.append({
+                            'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                            'confidence': conf,
+                            'class': cls_name
+                        })
+
         return detections
     
     def crop_meter(self, image: np.ndarray, bbox: List[int], padding: int = 20) -> np.ndarray:
@@ -91,13 +95,24 @@ class MeterDetector:
 
 
 class MeterSegmentor:
-    """ONNX-based meter segmentation"""
-    
-    def __init__(self, model_path: str, device: str = 'cpu', post_process_config: Dict = None):
-        """Initialize segmentor with ONNX model"""
+    """ONNX-based meter segmentation using SegFormer"""
+
+    # Default input size for SegFormer model
+    DEFAULT_INPUT_SIZE = 512
+
+    def __init__(self, model_path: str, device: str = 'cpu', post_process_config: Dict = None, input_size: int = None):
+        """Initialize segmentor with ONNX model
+
+        Args:
+            model_path: Path to ONNX model file
+            device: Device to run inference on ('cpu', 'cuda', 'mps')
+            post_process_config: Configuration for post-processing masks
+            input_size: Input image size for the model (default: auto-detect or 512)
+        """
         self.device = device
+        self.input_size = input_size  # Will be set during model loading if None
         self.session = self._load_onnx_model(model_path)
-        
+
         # 后处理配置
         self.post_process_config = post_process_config or {
             'remove_noise': True,           # 是否去除噪声
@@ -109,61 +124,99 @@ class MeterSegmentor:
         }
         
     def _load_onnx_model(self, model_path: str):
-        """Load ONNX segmentation model"""
-        # Check if ONNX file exists
-        onnx_path = model_path.replace('.pth', '.onnx')
-        if not os.path.exists(onnx_path):
-            # Try the exported directory
-            onnx_path = "models/segmentation/segmentation_model.onnx"
-        
-        if os.path.exists(onnx_path):
-            try:
-                # Configure ONNX Runtime providers
-                providers = []
-                if self.device == 'cuda' and 'CUDAExecutionProvider' in ort.get_available_providers():
-                    providers.append('CUDAExecutionProvider')
-                elif self.device == 'mps':
-                    # ONNX Runtime doesn't support MPS directly, use CPU
-                    providers.append('CPUExecutionProvider')
-                else:
-                    providers.append('CPUExecutionProvider')
-                
-                # Create inference session
-                session = ort.InferenceSession(onnx_path, providers=providers)
+        """Load ONNX segmentation model (SegFormer or DeepLabV3+)"""
+        # Check model paths in order of priority
+        # 1. SegFormer model (preferred)
+        # 2. Original model path
+        # 3. Legacy DeepLabV3+ model
+
+        search_paths = [
+            "models/segmentation/segformer_meter.onnx",  # SegFormer model
+            model_path,  # Provided path
+            model_path.replace('.pth', '.onnx'),  # Convert .pth to .onnx
+            "models/segmentation/segmentation_model.onnx",  # Legacy DeepLabV3+
+        ]
+
+        onnx_path = None
+        for path in search_paths:
+            if os.path.exists(path):
+                onnx_path = path
+                break
+
+        if onnx_path is None:
+            print(f"⚠️  No ONNX model found. Searched paths:")
+            for path in search_paths:
+                print(f"   - {path}")
+            return None
+
+        try:
+            # Configure ONNX Runtime providers
+            providers = []
+            if self.device == 'cuda' and 'CUDAExecutionProvider' in ort.get_available_providers():
+                providers.append('CUDAExecutionProvider')
+            elif self.device == 'mps':
+                # ONNX Runtime doesn't support MPS directly, use CPU
+                providers.append('CPUExecutionProvider')
+            else:
+                providers.append('CPUExecutionProvider')
+
+            # Create inference session
+            session = ort.InferenceSession(onnx_path, providers=providers)
+
+            # Auto-detect input size from model
+            input_shape = session.get_inputs()[0].shape
+            if len(input_shape) >= 4 and isinstance(input_shape[2], int):
+                detected_size = input_shape[2]
+                if self.input_size is None:
+                    self.input_size = detected_size
+                print(f"✅ Loaded SegFormer ONNX model from: {onnx_path}")
+            else:
+                if self.input_size is None:
+                    self.input_size = self.DEFAULT_INPUT_SIZE
                 print(f"✅ Loaded ONNX model from: {onnx_path}")
-                print(f"📊 Input shape: {session.get_inputs()[0].shape}")
-                print(f"📊 Output shape: {session.get_outputs()[0].shape}")
-                print(f"🔧 Providers: {session.get_providers()}")
-                
-                return session
-                
-            except Exception as e:
-                print(f"❌ Error loading ONNX model: {e}")
-                return None
-        else:
-            print(f"⚠️  ONNX model not found at: {onnx_path}")
+
+            print(f"📊 Input shape: {input_shape}")
+            print(f"📊 Output shape: {session.get_outputs()[0].shape}")
+            print(f"📐 Using input size: {self.input_size}x{self.input_size}")
+            print(f"🔧 Providers: {session.get_providers()}")
+
+            return session
+
+        except Exception as e:
+            print(f"❌ Error loading ONNX model: {e}")
             return None
     
-    def preprocess_image(self, image: np.ndarray, target_size: Tuple[int, int] = (224, 224)) -> np.ndarray:
-        """Preprocess image for ONNX inference"""
+    def preprocess_image(self, image: np.ndarray, target_size: Tuple[int, int] = None) -> np.ndarray:
+        """Preprocess image for ONNX inference (SegFormer compatible)
+
+        Args:
+            image: Input image in BGR format
+            target_size: Target size (height, width). If None, use self.input_size
+
+        Returns:
+            Preprocessed image tensor in NCHW format
+        """
+        if target_size is None:
+            target_size = (self.input_size, self.input_size)
+
         # Convert BGR to RGB
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
+
         # Resize image
         image_resized = cv2.resize(image_rgb, target_size)
-        
+
         # Normalize to [0, 1] and then apply ImageNet normalization
         image_normalized = image_resized.astype(np.float32) / 255.0
-        
-        # ImageNet normalization
+
+        # ImageNet normalization (same for both DeepLabV3+ and SegFormer)
         mean = np.array([0.485, 0.456, 0.406])
         std = np.array([0.229, 0.224, 0.225])
         image_normalized = (image_normalized - mean) / std
-        
+
         # Convert to NCHW format
         image_tensor = np.transpose(image_normalized, (2, 0, 1))
         image_batch = np.expand_dims(image_tensor, axis=0)
-        
+
         return image_batch.astype(np.float32)
     
     def post_process_mask(self, mask: np.ndarray) -> np.ndarray:
@@ -294,17 +347,29 @@ class MeterSegmentor:
 
 class MeterReadingApp:
     """Complete meter reading application"""
-    
+
     def __init__(self):
         """Initialize the application"""
-        # Model paths
-        self.detection_model_path = "models/detection/detection_model.pt"
-        self.segmentation_model_path = "models/segmentation/segmentation_model.onnx"
-        
+        # Model paths - use newly trained YOLOv11 model
+        self.detection_model_path = "models/detection/yolo11_meter.pt"
+        # Prefer SegFormer model, fallback to legacy DeepLabV3+
+        self.segmentation_model_path = "models/segmentation/segformer_meter.onnx"
+
         # Fallback to base models if trained models not available
         if not os.path.exists(self.detection_model_path):
-            self.detection_model_path = "yolov10n.pt"
-            print("Using base YOLOv10 model (not trained on meters)")
+            # Try alternative paths
+            alt_paths = [
+                "models/detection/detection_model.pt",
+                "yolo11m.pt",
+                "yolov10n.pt"
+            ]
+            for alt_path in alt_paths:
+                if os.path.exists(alt_path):
+                    self.detection_model_path = alt_path
+                    print(f"Using fallback model: {alt_path}")
+                    break
+            else:
+                print("Warning: No detection model found")
         
         # Initialize components
         self.detector = MeterDetector(self.detection_model_path)
@@ -352,10 +417,49 @@ class MeterReadingApp:
                 try:
                     # Step 2: Crop meter region
                     cropped_meter = self.detector.crop_meter(image, detection['bbox'])
+
+                    # Filter out invalid crops (too small or wrong aspect ratio)
+                    h, w = cropped_meter.shape[:2]
+                    min_size = 100  # Minimum dimension
+                    aspect_ratio = max(w, h) / min(w, h) if min(w, h) > 0 else 999
+
+                    if w < min_size or h < min_size:
+                        print(f"\n⏭️ [SKIP] Meter {i}: Too small ({w}x{h}), min required: {min_size}")
+                        continue
+
+                    if aspect_ratio > 3.0:
+                        print(f"\n⏭️ [SKIP] Meter {i}: Bad aspect ratio ({aspect_ratio:.2f}), likely not a gauge")
+                        continue
                     
                     # Step 3: Segmentation
                     segmentation_mask = self.segmentor.segment_meter(cropped_meter)
-                    
+
+                    # Debug logging for segmentation mask
+                    print(f"\n📊 [DEBUG] Meter {i} Segmentation Analysis:")
+                    print(f"   - Cropped image shape: {cropped_meter.shape}")
+                    print(f"   - Mask shape: {segmentation_mask.shape}")
+                    print(f"   - Mask unique values: {np.unique(segmentation_mask)}")
+                    print(f"   - Background (0) pixels: {np.sum(segmentation_mask == 0)}")
+                    print(f"   - Pointer (1) pixels: {np.sum(segmentation_mask == 1)}")
+                    print(f"   - Scale (2) pixels: {np.sum(segmentation_mask == 2)}")
+
+                    # Check if scale mask has valid pixels
+                    scale_mask = (segmentation_mask == 2).astype(np.uint8) * 255
+                    if np.sum(scale_mask) > 0:
+                        # Find scale bounding box
+                        coords = np.where(scale_mask > 0)
+                        print(f"   - Scale region: rows [{coords[0].min()}-{coords[0].max()}], cols [{coords[1].min()}-{coords[1].max()}]")
+                    else:
+                        print(f"   ⚠️ WARNING: No scale pixels detected in segmentation mask!")
+
+                    # Check pointer mask
+                    pointer_mask = (segmentation_mask == 1).astype(np.uint8) * 255
+                    if np.sum(pointer_mask) > 0:
+                        coords = np.where(pointer_mask > 0)
+                        print(f"   - Pointer region: rows [{coords[0].min()}-{coords[0].max()}], cols [{coords[1].min()}-{coords[1].max()}]")
+                    else:
+                        print(f"   ⚠️ WARNING: No pointer pixels detected in segmentation mask!")
+
                     # Step 4: Reading extraction
                     self.reader.scale_beginning = scale_min
                     self.reader.scale_end = scale_max

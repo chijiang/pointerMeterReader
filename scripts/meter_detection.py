@@ -10,10 +10,10 @@ Pointer Meter Detection and Cropping Script
 4. 裁剪仪表区域并保存到目标目录
 
 使用方法：
-python scripts/pointer_meter_detection.py \
+python scripts/meter_detection.py \
     --data-dir <输入图像目录> \
     --target-dir <输出目录> \
-    --model <模型路径，默认: models/detection/detection_model.pt> \
+    --model <模型路径，默认: models/detection/yolo11_meter.pt> \
     --conf 0.5 \
     --padding 20
 
@@ -42,6 +42,8 @@ except ImportError:
     print("❌ 错误: 未安装 ultralytics 库")
     print("请运行: pip install ultralytics")
     sys.exit(1)
+
+from scripts.image_utils import unwarp_meter_using_ellipse
 
 
 class PointerMeterDetector:
@@ -166,7 +168,8 @@ class PointerMeterDetector:
         return vis_image
     
     def process_single_image(self, image_path: Path, output_dir: Path, 
-                            save_visualization: bool = True) -> Dict:
+                            save_visualization: bool = True,
+                            apply_unwarp: bool = False) -> Dict:
         """
         处理单张图像
         
@@ -174,6 +177,7 @@ class PointerMeterDetector:
             image_path: 图像路径
             output_dir: 输出目录
             save_visualization: 是否保存可视化结果
+            apply_unwarp: 是否对裁剪结果做透视/形变矫正
             
         Returns:
             处理结果字典
@@ -196,7 +200,8 @@ class PointerMeterDetector:
             'success': len(detections) > 0,
             'num_detections': len(detections),
             'detections': detections,
-            'cropped_files': []
+            'cropped_files': [],
+            'unwarped_files': []
         }
         
         if len(detections) == 0:
@@ -206,8 +211,11 @@ class PointerMeterDetector:
         # 创建输出子目录
         cropped_dir = output_dir / "cropped"
         viz_dir = output_dir / "visualizations"
+        unwarp_dir = output_dir / "unwarped"
         cropped_dir.mkdir(parents=True, exist_ok=True)
         viz_dir.mkdir(parents=True, exist_ok=True)
+        if apply_unwarp:
+            unwarp_dir.mkdir(parents=True, exist_ok=True)
         
         # 裁剪并保存每个检测到的仪表
         base_name = image_path.stem
@@ -236,6 +244,26 @@ class PointerMeterDetector:
                     'confidence': detection['confidence'],
                     'size': cropped_meter.shape[:2]  # (height, width)
                 })
+
+                if apply_unwarp:
+                    # 对裁剪结果做透视矫正，输出正方形展开图和调试图
+                    unwarp_base = Path(output_filename).stem
+                    unwarp_output_path = unwarp_dir / f"{unwarp_base}_unwarp.jpg"
+                    unwarp_debug_path = unwarp_dir / f"{unwarp_base}_unwarp_debug.jpg"
+                    try:
+                        unwarp_meter_using_ellipse(
+                            str(output_path),
+                            str(unwarp_output_path),
+                            str(unwarp_debug_path)
+                        )
+                        result['unwarped_files'].append({
+                            'filename': unwarp_output_path.name,
+                            'path': str(unwarp_output_path),
+                            'debug_path': str(unwarp_debug_path),
+                            'source_cropped': str(output_path)
+                        })
+                    except Exception as e:
+                        print(f"⚠️  矫正仪表时出错 ({output_filename}): {e}")
                 
             except Exception as e:
                 print(f"⚠️  裁剪仪表时出错 ({image_path.name}, meter {i+1}): {e}")
@@ -253,7 +281,8 @@ class PointerMeterDetector:
         return result
     
     def process_batch(self, data_dir: Path, target_dir: Path, 
-                     save_visualization: bool = True) -> Dict:
+                     save_visualization: bool = True,
+                     apply_unwarp: bool = False) -> Dict:
         """
         批量处理图像
         
@@ -261,6 +290,7 @@ class PointerMeterDetector:
             data_dir: 输入图像目录
             target_dir: 输出目录
             save_visualization: 是否保存可视化结果
+            apply_unwarp: 是否对裁剪结果做透视/形变矫正
             
         Returns:
             处理结果统计
@@ -291,7 +321,12 @@ class PointerMeterDetector:
         
         for image_path in tqdm(image_files, desc="处理图像"):
             try:
-                result = self.process_single_image(image_path, target_dir, save_visualization)
+                result = self.process_single_image(
+                    image_path,
+                    target_dir,
+                    save_visualization,
+                    apply_unwarp
+                )
                 all_results.append(result)
                 
                 if result['success']:
@@ -365,17 +400,17 @@ def main():
         epilog="""
 示例用法:
   # 基本使用
-  python scripts/pointer_meter_detection.py --data-dir data/raw_images --target-dir data/cropped_meters
+  python scripts/meter_detection.py --data-dir data/raw_images --target-dir data/cropped_meters
   
   # 指定模型和置信度
-  python scripts/pointer_meter_detection.py \\
+  python scripts/meter_detection.py \\
     --data-dir data/raw_images \\
     --target-dir data/cropped_meters \\
     --model models/detection/best.pt \\
     --conf 0.6
   
   # 不保存可视化结果
-  python scripts/pointer_meter_detection.py \\
+  python scripts/meter_detection.py \\
     --data-dir data/raw_images \\
     --target-dir data/cropped_meters \\
     --no-visualization
@@ -422,6 +457,12 @@ def main():
         action='store_true',
         help='不保存可视化结果'
     )
+
+    parser.add_argument(
+        '--unwarp',
+        action='store_true',
+        help='对裁剪后的仪表进行透视/形变矫正并单独输出'
+    )
     
     args = parser.parse_args()
     
@@ -460,7 +501,8 @@ def main():
         results = detector.process_batch(
             data_dir=data_dir,
             target_dir=target_dir,
-            save_visualization=not args.no_visualization
+            save_visualization=not args.no_visualization,
+            apply_unwarp=args.unwarp
         )
         
         # 打印统计信息
@@ -470,6 +512,8 @@ def main():
         print(f"📁 裁剪图像保存在: {target_dir / 'cropped'}")
         if not args.no_visualization:
             print(f"📁 可视化结果保存在: {target_dir / 'visualizations'}")
+        if args.unwarp:
+            print(f"📁 矫正图像保存在: {target_dir / 'unwarped'}")
         
     except Exception as e:
         print(f"\n❌ 程序执行出错: {e}")
@@ -480,4 +524,10 @@ def main():
 
 if __name__ == "__main__":
     main()
-
+"""
+  python scripts/meter_detection.py \
+    --data-dir /Users/joe.lu/Desktop/诺华工厂/panel_image \
+    --target-dir /Users/joe.lu/Desktop/诺华工厂/output \
+    --model models/detection/detection_model.pt \
+    --unwarp
+"""

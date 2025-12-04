@@ -18,3 +18,12 @@ runs/
 .cursor/
 .DS_Store
 temp/
+
+# IDE configs
+.idea/
+.vscode/
+
+# Cache directories
+.pip_cache/
+.uv_cache/
+.claude/

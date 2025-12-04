@@ -93,6 +93,16 @@ python scripts/segmentation_pipeline.py \
     --epochs 50 \
     --batch-size 8 \
     --learning-rate 0.001
+
+  python scripts/segmentation_pipeline.py \
+    --coco-json data/coco_data/result_coco.json \
+    --coco-images data/coco_data/images \
+    --config config/segmentation_config.yaml \
+    --output-onnx models/segmentation/segmentation_model.onnx \
+    --epochs 180 \
+    --batch-size 8 \
+    --learning-rate 0.0005
+
 ```
 
 **跳过数据转换（使用已有分割数据）**：

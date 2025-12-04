@@ -1,3 +1,4 @@
+# Core dependencies
 absl-py==2.3.0
 aiofiles==24.1.0
 annotated-types==0.7.0
@@ -83,6 +84,9 @@ typing-inspection==0.4.1
 tzdata==2025.2
 ultralytics==8.3.151
 ultralytics-thop==2.0.14
+
+# SegFormer dependencies (for transformer-based segmentation)
+transformers>=4.30.0
 urllib3==2.4.0
 uvicorn==0.34.3
 websockets==15.0.1
