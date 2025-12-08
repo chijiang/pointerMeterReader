@@ -75,6 +75,7 @@ def print_banner():
 ║                                                                  ║
 ║  Detection: YOLOv11 (meter localization)                         ║
 ║  Segmentation: SegFormer (pointer/scale identification)          ║
+║  Classification: EfficientNet (binary/multi-class)               ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
     print(banner)
@@ -128,6 +129,27 @@ def train_segmentation(config: ConfigManager, args):
     return best_score
 
 
+def train_classification(config: ConfigManager, args):
+    """Train classification model"""
+    from training.classification_trainer import ClassificationTrainer
+
+    trainer = ClassificationTrainer(config)
+    trainer.setup()
+
+    if args.eval_only:
+        metrics = trainer.evaluate(args.model)
+        return metrics
+
+    if args.export_only:
+        trainer.export_model()
+        return
+
+    # Train
+    best_score = trainer.train(resume=args.resume)
+
+    return best_score
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Unified Training Pipeline for Meter Reading Models',
@@ -137,8 +159,8 @@ def main():
 
     # Task selection
     parser.add_argument('--task', type=str, required=True,
-                        choices=['detection', 'segmentation'],
-                        help='Training task: detection or segmentation')
+                        choices=['detection', 'segmentation', 'classification'],
+                        help='Training task: detection, segmentation, or classification')
 
     # Configuration
     parser.add_argument('--config', type=str, required=True,
@@ -225,9 +247,12 @@ def main():
         if args.task == 'detection':
             logger.info("Starting detection training (YOLOv11)")
             result = train_detection(config, args)
-        else:
+        elif args.task == 'segmentation':
             logger.info("Starting segmentation training (SegFormer)")
             result = train_segmentation(config, args)
+        else:
+            logger.info("Starting classification training (EfficientNet)")
+            result = train_classification(config, args)
 
         logger.info("Training pipeline completed successfully!")
 

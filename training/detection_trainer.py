@@ -76,7 +76,10 @@ class DetectionTrainer:
     def _setup_directories(self):
         """Create output directories"""
         self.project_root = Path(__file__).parent.parent
-        self.output_dir = self.project_root / "outputs" / "detection"
+
+        # Use save_dir from config if specified
+        save_dir = self.extra.get('save_dir', 'outputs/detection')
+        self.output_dir = self.project_root / save_dir
         self.checkpoint_dir = self.output_dir / "checkpoints"
         self.export_dir = self.output_dir / "exported"
         self.model_dir = self.project_root / "models" / "detection"
@@ -103,6 +106,16 @@ class DetectionTrainer:
             Path to dataset.yaml
         """
         logger.info("Preparing dataset...")
+
+        # Check if data_yaml is directly specified (already converted dataset)
+        data_yaml = self.extra.get('data_yaml')
+        if data_yaml:
+            data_yaml_path = Path(data_yaml)
+            if data_yaml_path.exists():
+                logger.info(f"Using pre-converted dataset: {data_yaml}")
+                return str(data_yaml_path.resolve())
+            else:
+                raise FileNotFoundError(f"Specified data_yaml not found: {data_yaml}")
 
         use_roboflow = self.extra.get('use_roboflow_format', False)
 

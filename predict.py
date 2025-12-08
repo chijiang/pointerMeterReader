@@ -63,6 +63,7 @@ def print_banner():
 ║                                                                  ║
 ║  Detection: YOLOv11 (meter localization)                         ║
 ║  Segmentation: SegFormer (pointer/scale identification)          ║
+║  Classification: EfficientNet (binary/multi-class)               ║
 ║  Pipeline: Complete meter reading extraction                     ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
@@ -71,12 +72,29 @@ def print_banner():
 
 def find_model(task: str, model_type: str = 'pt') -> Optional[str]:
     """Auto-find model file"""
-    search_paths = [
-        Path(f"models/detection") if task == 'detection' else Path(f"models/segmentation"),
-        Path("outputs/detection/checkpoints") if task == 'detection' else Path("outputs/segmentation/checkpoints"),
-        Path("runs_gauge"),
-        Path("runs"),
-    ]
+    if task == 'detection':
+        search_paths = [
+            Path("models/detection"),
+            Path("outputs/detection/checkpoints"),
+            Path("runs_gauge"),
+            Path("runs"),
+        ]
+    elif task == 'segmentation':
+        search_paths = [
+            Path("models/segmentation"),
+            Path("outputs/segmentation/checkpoints"),
+        ]
+    elif task == 'classification':
+        search_paths = [
+            Path("models/classification"),
+            Path("outputs/classification/checkpoints"),
+            Path("outputs/classification/exported"),
+        ]
+    else:
+        search_paths = [
+            Path("models"),
+            Path("outputs"),
+        ]
 
     extensions = ['.pt', '.pth', '.onnx'] if model_type == 'any' else [f'.{model_type}']
 
@@ -212,6 +230,76 @@ def run_segmentation(args):
             print(f"Error: {result.error}")
 
 
+def run_classification(args):
+    """Run classification inference"""
+    from inference.classification_predictor import ClassificationPredictor
+
+    # Find model
+    model_path = args.model
+    if not model_path:
+        model_path = find_model('classification', 'any')
+        if not model_path:
+            print("Error: No classification model found. Specify with --model")
+            sys.exit(1)
+        print(f"Auto-detected model: {model_path}")
+
+    # Create predictor
+    predictor = ClassificationPredictor(
+        model_path=model_path,
+        device=args.device,
+        threshold=args.threshold,
+    )
+
+    # Warmup
+    if args.warmup:
+        predictor.warmup()
+
+    # Process
+    source = Path(args.source)
+    output_dir = Path(args.output) if args.output else None
+
+    if source.is_dir():
+        results = predictor.predict_directory(
+            str(source),
+            output_dir=str(output_dir) if output_dir else None,
+            save_visualization=args.save,
+        )
+
+        # Summary statistics
+        total = len(results)
+        successful = sum(1 for r in results if r.success)
+        positive_count = sum(
+            1 for r in results
+            if r.success and r.predictions.class_id == 1
+        )
+
+        print(f"\nProcessed {total} images")
+        print(f"Successful: {successful}/{total}")
+        print(f"Positive (has_water): {positive_count}/{successful}")
+        print(f"Negative (no_water): {successful - positive_count}/{successful}")
+
+    else:
+        result = predictor.predict(str(source))
+
+        if result.success:
+            print(f"\nClassification Result:")
+            print(f"  Class: {result.predictions.class_name}")
+            print(f"  Confidence: {result.predictions.confidence:.2%}")
+            print(f"  Probabilities:")
+            for name, prob in result.predictions.probabilities.items():
+                print(f"    {name}: {prob:.2%}")
+            print(f"  Inference time: {result.inference_time_ms:.1f} ms")
+
+            # Save
+            if args.save and output_dir:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                import cv2
+                cv2.imwrite(str(output_dir / f"{source.stem}_classification.jpg"), result.visualization)
+                print(f"Saved to: {output_dir}")
+        else:
+            print(f"Error: {result.error}")
+
+
 def run_pipeline(args):
     """Run complete pipeline"""
     from inference.pipeline_predictor import PipelinePredictor
@@ -327,7 +415,7 @@ def main():
 
     # Task selection
     parser.add_argument('--task', type=str, required=True,
-                        choices=['detection', 'segmentation', 'pipeline'],
+                        choices=['detection', 'segmentation', 'classification', 'pipeline'],
                         help='Prediction task')
 
     # Input/Output
@@ -358,6 +446,10 @@ def main():
                         help='Confidence threshold')
     parser.add_argument('--iou', type=float, default=0.45,
                         help='IoU threshold for NMS')
+
+    # Classification settings
+    parser.add_argument('--threshold', type=float, default=0.5,
+                        help='Classification confidence threshold')
 
     # Segmentation settings
     parser.add_argument('--alpha', type=float, default=0.5,
@@ -400,6 +492,8 @@ def main():
             run_detection(args)
         elif args.task == 'segmentation':
             run_segmentation(args)
+        elif args.task == 'classification':
+            run_classification(args)
         else:
             run_pipeline(args)
 

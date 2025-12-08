@@ -1,0 +1,112 @@
+# Water Detection Classification Configuration
+# Binary classification: has_water (1) vs no_water (0)
+
+# Model settings
+model:
+  name: "efficientnet_b0"  # Options: efficientnet_b0, resnet18, resnet50, mobilenet_v3_small
+  pretrained: true
+  num_classes: 2
+  dropout: 0.2
+
+# Class names
+classes:
+  names: ["no_water", "has_water"]
+  positive_class: 1  # Index of positive class for binary metrics
+
+# Data settings
+data:
+  root_dir: "data/water_classification"
+  train_dir: "train"
+  val_dir: "val"
+  image_size: 224  # EfficientNet default input size
+
+  # Data augmentation (training only)
+  augmentation:
+    horizontal_flip: 0.5
+    vertical_flip: 0.0
+    rotation: 15
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+    random_affine:
+      translate: [0.1, 0.1]
+      scale: [0.9, 1.1]
+    gaussian_blur: 0.1
+    random_erasing: 0.1
+
+  # Normalization (ImageNet stats)
+  normalize:
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+
+# Training settings
+training:
+  epochs: 50
+  batch_size: 32
+  learning_rate: 1.0e-4  # Lower LR for pretrained models
+  weight_decay: 0.01
+
+  # Optimizer
+  optimizer: "AdamW"
+
+  # Learning rate scheduler
+  scheduler:
+    type: "CosineAnnealingLR"
+    T_max: null  # Auto-set to epochs if null
+    eta_min: 1.0e-6
+
+  # Warmup
+  warmup:
+    enabled: true
+    epochs: 3
+    start_lr: 1.0e-6
+
+  # Early stopping
+  early_stopping:
+    patience: 10
+    min_delta: 0.001
+    monitor: "val_f1_score"
+
+  # Loss function
+  loss:
+    type: "CrossEntropyLoss"
+    class_weights: "balanced"  # "balanced", "none", or [w0, w1]
+    label_smoothing: 0.1
+
+  # Mixed precision training
+  mixed_precision: true
+  gradient_accumulation_steps: 1
+
+# Device settings
+device: "auto"  # auto, cuda, mps, cpu
+num_workers: 4
+pin_memory: true
+
+# Checkpoint settings
+save:
+  checkpoint_dir: "outputs/classification/checkpoints"
+  save_interval: 5
+  save_top_k: 3
+
+# Export settings
+export:
+  formats: ["onnx"]
+  output_dir: "outputs/classification/exported"
+  models_dir: "models/classification"
+  onnx:
+    opset_version: 12
+    dynamic_axes:
+      input: {0: "batch_size"}
+      output: {0: "batch_size"}
+
+# Logging
+logging:
+  level: "INFO"
+  tensorboard: true
+  log_dir: "outputs/classification/logs"
+
+# Additional settings
+seed: 42
+deterministic: false  # Set to true for reproducibility (may reduce performance)

@@ -1,0 +1,104 @@
+# YOLO11 积水检测模型训练配置
+# Spill/Water Detection on Factory Floor
+
+# 模型配置
+model: 'yolo11m.pt'  # YOLOv11 medium模型
+
+# 训练基本参数
+epochs: 100              # 训练轮数
+batch_size: 16           # 批大小（根据GPU内存调整）
+image_size: 640          # 输入图像大小
+learning_rate: 0.01      # 初始学习率
+weight_decay: 0.0005     # 权重衰减
+momentum: 0.937          # SGD动量
+patience: 30             # 早停耐心值
+save_period: 10          # 模型保存间隔
+experiment_name: 'yolo11m_spill_detection'  # 实验名称
+
+# 数据集配置 - 已转换的YOLO格式数据
+data_yaml: 'data/spill_yolo/data.yaml'
+
+# 设备和性能配置
+device: 'auto'           # 自动检测：CUDA/MPS/CPU
+workers: 4               # 数据加载器工作进程数
+cos_lr: true             # 使用余弦学习率调度
+close_mosaic: 10         # 最后10个epoch关闭mosaic增强
+amp: true                # 自动混合精度训练
+cache: true              # 缓存图像到内存以加速训练
+
+# 数据增强配置（针对积水检测优化）
+augmentation:
+  # 颜色空间增强 - 积水可能有不同光照条件
+  hsv_h: 0.015           # 色调增强范围
+  hsv_s: 0.7             # 饱和度增强范围
+  hsv_v: 0.5             # 亮度增强范围 (工厂光照变化)
+
+  # 几何变换增强
+  degrees: 15.0          # 旋转角度范围（度）
+  translate: 0.2         # 平移范围
+  scale: 0.5             # 缩放范围
+  shear: 5.0             # 剪切角度范围
+  perspective: 0.0       # 透视变换
+
+  # 翻转增强
+  flipud: 0.5            # 上下翻转概率（积水形状随机）
+  fliplr: 0.5            # 左右翻转概率
+
+  # 混合增强
+  mosaic: 1.0            # Mosaic增强概率
+  mixup: 0.15            # MixUp增强概率
+  copy_paste: 0.1        # Copy-Paste增强概率
+
+# 验证和评估配置
+validation:
+  conf_threshold: 0.25   # 置信度阈值
+  iou_threshold: 0.45    # NMS IoU阈值
+  max_det: 100           # 最大检测数量
+
+# 损失函数权重
+loss_weights:
+  box: 7.5               # 边界框损失权重
+  cls: 0.5               # 分类损失权重
+  dfl: 1.5               # 分布损失权重
+
+# 优化器配置
+optimizer:
+  type: 'AdamW'          # 优化器类型
+  lr0: 0.01              # 初始学习率
+  lrf: 0.01              # 最终学习率因子
+  weight_decay: 0.0005   # 权重衰减
+
+# 学习率调度器
+lr_scheduler:
+  type: 'cosine'         # 学习率调度类型
+  warmup_epochs: 3       # 预热轮数
+  warmup_momentum: 0.8   # 预热动量
+  warmup_bias_lr: 0.1    # 预热偏置学习率
+
+# 模型导出配置
+export:
+  formats: ['onnx']
+  optimize: true
+  half: false
+  dynamic: true          # 支持动态输入尺寸
+  simplify: true
+
+# 输出目录配置
+save_dir: 'outputs/spill_detection'
+
+# 日志和可视化配置
+logging:
+  log_level: 'INFO'
+  save_plots: true
+  save_predictions: true
+
+# 回调函数配置
+callbacks:
+  early_stopping:
+    enabled: true
+    patience: 30
+    min_delta: 0.001
+
+  model_checkpoint:
+    save_best_only: true
+    save_weights_only: false

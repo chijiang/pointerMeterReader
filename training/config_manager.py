@@ -17,24 +17,39 @@ class TrainingConfig:
     """Unified training configuration"""
 
     # Model settings
-    model_type: str = 'detection'  # 'detection' or 'segmentation'
+    model_type: str = 'detection'  # 'detection', 'segmentation', or 'classification'
     model_name: str = 'yolo11m.pt'
     num_classes: int = 1
     pretrained: bool = True
+    dropout: float = 0.2
 
     # Data settings
     data_root: str = 'data'
+    train_dir: str = 'train'
+    val_dir: str = 'val'
     train_split: str = 'train'
     val_split: str = 'val'
     image_size: int = 640
     batch_size: int = 16
     num_workers: int = 4
 
+    # Class names (for classification)
+    class_names: list = field(default_factory=lambda: ['class_0', 'class_1'])
+    class_weights: Any = None  # 'balanced', 'none', or list of weights
+
+    # Normalization (for classification)
+    normalize_mean: list = field(default_factory=lambda: [0.485, 0.456, 0.406])
+    normalize_std: list = field(default_factory=lambda: [0.229, 0.224, 0.225])
+
+    # Augmentation config
+    augmentation: Dict[str, Any] = field(default_factory=dict)
+
     # Training settings
     epochs: int = 100
     learning_rate: float = 0.01
     weight_decay: float = 0.0005
     optimizer: str = 'AdamW'
+    label_smoothing: float = 0.0
 
     # GPU optimization
     device: str = 'auto'
@@ -48,6 +63,8 @@ class TrainingConfig:
 
     # Scheduler
     scheduler_type: str = 'cosine'
+    scheduler_T_max: int = None
+    scheduler_eta_min: float = 1e-6
     warmup_epochs: int = 3
 
     # Early stopping
@@ -59,6 +76,11 @@ class TrainingConfig:
     experiment_name: str = 'experiment'
     save_interval: int = 10
     save_top_k: int = 3
+
+    # Export
+    export_dir: str = 'outputs/exported'
+    models_dir: str = 'models'
+    onnx_opset_version: int = 12
 
     # Logging
     log_level: str = 'INFO'
@@ -100,6 +122,16 @@ class ConfigManager:
             'optimizer': 'AdamW',
             'scheduler_type': 'polynomial',
             'warmup_epochs': 5,
+        },
+        'classification': {
+            'model_name': 'efficientnet_b0',
+            'image_size': 224,
+            'batch_size': 32,
+            'learning_rate': 1e-4,
+            'epochs': 50,
+            'optimizer': 'AdamW',
+            'scheduler_type': 'CosineAnnealingLR',
+            'warmup_epochs': 3,
         }
     }
 
@@ -138,12 +170,25 @@ class ConfigManager:
         """Parse raw config into TrainingConfig"""
         raw = self.raw_config
 
-        # Detect model type
-        if 'model' in raw and isinstance(raw['model'], dict):
-            # SegFormer-style config
-            model_type = 'segmentation'
-            model_name = raw['model'].get('name', 'nvidia/segformer-b2-finetuned-ade-512-512')
-            num_classes = raw['model'].get('num_classes', 3)
+        # Detect model type from config structure
+        if 'classes' in raw and 'names' in raw.get('classes', {}):
+            # Classification-style config
+            model_type = 'classification'
+            model_name = raw.get('model', {}).get('name', 'efficientnet_b0')
+            num_classes = raw.get('model', {}).get('num_classes', 2)
+        elif 'model' in raw and isinstance(raw['model'], dict):
+            # Check if it's classification or segmentation
+            if raw['model'].get('name', '').startswith('efficientnet') or \
+               raw['model'].get('name', '').startswith('resnet') or \
+               raw['model'].get('name', '').startswith('mobilenet'):
+                model_type = 'classification'
+                model_name = raw['model'].get('name', 'efficientnet_b0')
+                num_classes = raw['model'].get('num_classes', 2)
+            else:
+                # SegFormer-style config
+                model_type = 'segmentation'
+                model_name = raw['model'].get('name', 'nvidia/segformer-b2-finetuned-ade-512-512')
+                num_classes = raw['model'].get('num_classes', 3)
         elif 'model' in raw and isinstance(raw['model'], str):
             # YOLO-style config
             model_type = 'detection'
@@ -162,6 +207,20 @@ class ConfigManager:
         training_config = raw.get('training', {})
         save_config = raw.get('save', {})
         logging_config = raw.get('logging', {})
+        export_config = raw.get('export', {})
+        classes_config = raw.get('classes', {})
+
+        # Get class names and weights for classification
+        class_names = classes_config.get('names', ['class_0', 'class_1'])
+        class_weights = training_config.get('loss', {}).get('class_weights', None)
+
+        # Get normalization config
+        normalize_config = data_config.get('normalize', {})
+        normalize_mean = normalize_config.get('mean', [0.485, 0.456, 0.406])
+        normalize_std = normalize_config.get('std', [0.229, 0.224, 0.225])
+
+        # Get augmentation config
+        augmentation = data_config.get('augmentation', {})
 
         self.config = TrainingConfig(
             # Model
@@ -169,20 +228,35 @@ class ConfigManager:
             model_name=model_name,
             num_classes=num_classes,
             pretrained=raw.get('model', {}).get('pretrained', True) if isinstance(raw.get('model'), dict) else True,
+            dropout=raw.get('model', {}).get('dropout', 0.2) if isinstance(raw.get('model'), dict) else 0.2,
 
             # Data
             data_root=data_config.get('root_dir', raw.get('dataset_root', 'data')),
+            train_dir=data_config.get('train_dir', 'train'),
+            val_dir=data_config.get('val_dir', 'val'),
             train_split=data_config.get('train_split', 'train'),
             val_split=data_config.get('val_split', 'val'),
             image_size=data_config.get('image_size', raw.get('image_size', defaults.get('image_size', 640))),
-            batch_size=data_config.get('batch_size', raw.get('batch_size', defaults.get('batch_size', 16))),
-            num_workers=data_config.get('num_workers', raw.get('workers', 4)),
+            batch_size=training_config.get('batch_size', data_config.get('batch_size', raw.get('batch_size', defaults.get('batch_size', 16)))),
+            num_workers=raw.get('num_workers', data_config.get('num_workers', raw.get('workers', 4))),
+
+            # Class names and weights (for classification)
+            class_names=class_names,
+            class_weights=class_weights,
+
+            # Normalization
+            normalize_mean=normalize_mean,
+            normalize_std=normalize_std,
+
+            # Augmentation
+            augmentation=augmentation,
 
             # Training
             epochs=training_config.get('epochs', raw.get('epochs', defaults.get('epochs', 100))),
             learning_rate=float(training_config.get('learning_rate', raw.get('learning_rate', defaults.get('learning_rate', 0.01)))),
-            weight_decay=float(training_config.get('weight_decay', raw.get('weight_decay', 0.0005))),
+            weight_decay=float(training_config.get('weight_decay', raw.get('weight_decay', 0.01))),
             optimizer=training_config.get('optimizer', raw.get('optimizer', {}).get('type', defaults.get('optimizer', 'AdamW'))),
+            label_smoothing=float(training_config.get('loss', {}).get('label_smoothing', 0.0)),
 
             # GPU optimization
             device=raw.get('device', 'auto'),
@@ -192,10 +266,12 @@ class ConfigManager:
 
             # Memory
             cache_images=raw.get('cache', True),
-            pin_memory=data_config.get('pin_memory', True),
+            pin_memory=raw.get('pin_memory', data_config.get('pin_memory', True)),
 
             # Scheduler
             scheduler_type=training_config.get('scheduler', {}).get('type', raw.get('lr_scheduler', {}).get('type', defaults.get('scheduler_type', 'cosine'))),
+            scheduler_T_max=training_config.get('scheduler', {}).get('T_max', None),
+            scheduler_eta_min=float(training_config.get('scheduler', {}).get('eta_min', 1e-6)),
             warmup_epochs=training_config.get('warmup', {}).get('epochs', raw.get('lr_scheduler', {}).get('warmup_epochs', defaults.get('warmup_epochs', 3))),
 
             # Early stopping
@@ -203,10 +279,15 @@ class ConfigManager:
             min_delta=float(training_config.get('early_stopping', {}).get('min_delta', 0.001)),
 
             # Saving
-            save_dir=save_config.get('checkpoint_dir', raw.get('save_dir', 'outputs')),
+            save_dir=save_config.get('checkpoint_dir', raw.get('save_dir', f'outputs/{model_type}')),
             experiment_name=raw.get('experiment_name', 'experiment'),
             save_interval=save_config.get('save_interval', raw.get('save_period', 10)),
             save_top_k=save_config.get('save_top_k', 3),
+
+            # Export
+            export_dir=export_config.get('output_dir', f'outputs/{model_type}/exported'),
+            models_dir=export_config.get('models_dir', f'models/{model_type}'),
+            onnx_opset_version=export_config.get('onnx', {}).get('opset_version', 12),
 
             # Logging
             log_level=logging_config.get('level', 'INFO'),

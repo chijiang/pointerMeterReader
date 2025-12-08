@@ -4,6 +4,7 @@ Unified Inference Pipeline for Meter Reading Models
 This module provides GPU-optimized inference for:
 - YOLOv11 object detection (meter localization)
 - SegFormer semantic segmentation (pointer/scale identification)
+- EfficientNet image classification (binary/multi-class)
 - Complete meter reading pipeline
 
 Features:
@@ -20,6 +21,9 @@ Usage:
     # Segmentation inference
     python predict.py --task segmentation --source image.jpg
 
+    # Classification inference
+    python predict.py --task classification --source image.jpg
+
     # Complete pipeline (detect + segment + read)
     python predict.py --task pipeline --source image.jpg
 """
@@ -27,11 +31,13 @@ Usage:
 from .base_predictor import BasePredictor
 from .detection_predictor import DetectionPredictor
 from .segmentation_predictor import SegmentationPredictor
+from .classification_predictor import ClassificationPredictor
 from .pipeline_predictor import PipelinePredictor
 
 __all__ = [
     'BasePredictor',
     'DetectionPredictor',
     'SegmentationPredictor',
+    'ClassificationPredictor',
     'PipelinePredictor',
 ]
